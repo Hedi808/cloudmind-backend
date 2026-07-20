@@ -1,17 +1,27 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
 .Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
 .venv/
 venv/
 env/
+backend/.venv/
 
 # Environment secrets
 .env
 .env.*
 !.env.example
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
 
 # IDE
 .vscode/
@@ -23,17 +33,38 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
 
 # Azure / local auth
 .azure/
 .azure-*/
 
-# Node / frontend future
+# Node / frontend
 node_modules/
+frontend/node_modules/
 dist/
+frontend/dist/
 build/
+frontend/build/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+cloudmind.db
 
 # Temporary files
 tmp/
 temp/
 *.tmp
+
+# Local cloned/analyzed repositories
+local_repos/
+cloned_repositories/
+repositories/
+backend/local_repos/
+backend/cloned_repositories/
+backend/repositories/
+
+# Generated cache
+.cache/

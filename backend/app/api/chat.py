@@ -1,26 +1,72 @@
 from fastapi import APIRouter
 
-from app.agents.orchestrator import Orchestrator
-from app.schemas.chat import ChatRequest, ChatResponse
+from app.agents.conversation_brain_agent import ConversationBrainAgent
+from app.schemas.chat import (
+    ChatRequest,
+    ChatSessionRequest,
+    ClearChatMemoryRequest,
+)
 
-router = APIRouter(prefix="/chat", tags=["Chat"])
+router = APIRouter(
+    prefix="/api/chat",
+    tags=["Phase 15A - Conversational Brain"],
+)
 
-orchestrator = Orchestrator()
+conversation_brain_agent = ConversationBrainAgent()
 
 
-@router.post("/", response_model=ChatResponse)
+@router.post("/")
 def chat(request: ChatRequest):
-    result = orchestrator.handle_message(
+    result = conversation_brain_agent.chat(
         message=request.message,
+        session_id=request.session_id,
         repo_url=request.repo_url,
-        branch=request.branch,
-        environment=request.environment,
+        resource_group=request.resource_group,
+        app_name=request.app_name,
+        pull_request_url=request.pull_request_url,
+        approval_confirmed=request.approval_confirmed,
+        context=request.context,
     )
 
-    return ChatResponse(
-        user_message=request.message,
-        detected_intent=result["detected_intent"],
-        agent_used=result["agent_used"],
-        response=result["response"],
-        metadata=result["metadata"],
+    return {
+        "status": result.get("status", "completed"),
+        "message": result.get("message", "Conversation processed."),
+        "result": result,
+    }
+
+
+@router.post("/session")
+def get_session(request: ChatSessionRequest):
+    result = conversation_brain_agent.get_session(
+        session_id=request.session_id,
     )
+
+    return {
+        "status": result.get("status", "completed"),
+        "message": result.get("message", "Conversation session loaded."),
+        "result": result,
+    }
+
+
+@router.post("/clear")
+def clear_memory(request: ClearChatMemoryRequest):
+    result = conversation_brain_agent.clear_memory(
+        session_id=request.session_id,
+    )
+
+    return {
+        "status": result.get("status", "completed"),
+        "message": result.get("message", "Conversation memory cleared."),
+        "result": result,
+    }
+
+
+@router.get("/tools")
+def list_tools():
+    return {
+        "status": "success",
+        "message": "Available CloudMind tools listed.",
+        "result": {
+            "tools": conversation_brain_agent.tools.list_tools(),
+        },
+    }
