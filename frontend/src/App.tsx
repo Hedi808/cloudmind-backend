@@ -28,6 +28,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { sendCloudMindMessage } from "./api/cloudmindApi";
+import { getProject, listProjects } from "./api/projectsApi";
 import type {
   ChatMessage,
   CloudMindChatResult,
@@ -135,6 +136,9 @@ export default function App() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
+  const [savedProjects, setSavedProjects] = useState<ProjectMemoryProject[]>([]);
+  const [isProjectsLoading, setIsProjectsLoading] = useState(false);
+
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "welcome",
@@ -162,6 +166,7 @@ export default function App() {
   const latestDeployment = projectContext?.latest_deployment ?? null;
   const latestActions = projectContext?.latest_actions ?? [];
   const latestArtifacts = projectContext?.latest_artifacts ?? [];
+  const selectedProjectId = project?.id ?? conversationState?.project_id ?? null;
 
   const missionStatus = useMemo(() => {
     const toolResultStatus = getString(latestResult?.tool_result, "status");
@@ -229,8 +234,40 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    void loadSavedProjects();
+  }, []);
+
+  useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
+
+  const loadSavedProjects = async () => {
+    setIsProjectsLoading(true);
+
+    try {
+      const response = await listProjects();
+      setSavedProjects(response.projects);
+    } catch {
+      setSavedProjects([]);
+    } finally {
+      setIsProjectsLoading(false);
+    }
+  };
+
+  const hydrateFromProjectContext = (context: ProjectContext) => {
+    setProjectContext(context);
+
+    const memoryProject = context.project;
+    const deployment = context.latest_deployment;
+    const latestPrUrl = findLatestPullRequestUrl(context.latest_artifacts);
+
+    setRepoUrl(memoryProject.repo_url ?? "");
+    setResourceGroup(
+      memoryProject.azure_resource_group ?? deployment?.resource_group ?? "",
+    );
+    setAppName(memoryProject.azure_app_name ?? deployment?.app_name ?? "");
+    setPullRequestUrl(latestPrUrl ?? "");
+  };
 
   const hydrateFromResult = (result: CloudMindChatResult) => {
     setLatestResult(result);
@@ -249,7 +286,9 @@ export default function App() {
       deployment?.resource_group;
     const nextAppName =
       state.app_name ?? memoryProject?.azure_app_name ?? deployment?.app_name;
-    const nextPullRequestUrl = state.latest_pr_url;
+    const nextPullRequestUrl =
+      state.latest_pr_url ??
+      findLatestPullRequestUrl(result.project_context?.latest_artifacts ?? []);
 
     if (nextRepoUrl) {
       setRepoUrl(nextRepoUrl);
@@ -265,6 +304,47 @@ export default function App() {
 
     if (nextPullRequestUrl) {
       setPullRequestUrl(nextPullRequestUrl);
+    }
+  };
+
+  const selectSavedProject = async (selectedProject: ProjectMemoryProject) => {
+    setIsProjectsLoading(true);
+
+    try {
+      const response = await getProject(selectedProject.id);
+      hydrateFromProjectContext(response.context);
+      setProjectMode("custom");
+
+      setMessages((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: `Loaded saved project from PostgreSQL memory.\n\nProject: ${
+            response.project.name ?? response.project.repo_name
+          }\nRepository: ${response.project.repo_url}`,
+          timestamp: nowLabel(),
+          status: "loaded",
+        },
+      ]);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not load saved project.";
+
+      setMessages((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: `Could not load saved project.\n\n${message}`,
+          timestamp: nowLabel(),
+          status: "failed",
+        },
+      ]);
+    } finally {
+      setIsProjectsLoading(false);
     }
   };
 
@@ -297,7 +377,7 @@ export default function App() {
         approval_confirmed: approvalConfirmed,
         context: {
           project_mode: projectMode,
-          frontend_phase: "phase_17_project_memory_dashboard",
+          frontend_phase: "phase_18_saved_project_selector",
         },
       });
 
@@ -305,6 +385,7 @@ export default function App() {
 
       setSessionId(result.session_id);
       hydrateFromResult(result);
+      void loadSavedProjects();
 
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -379,6 +460,14 @@ export default function App() {
       <div className="mx-auto grid max-w-[1800px] gap-4 xl:grid-cols-[360px_minmax(0,1fr)_430px]">
         <aside className="space-y-4">
           <BrandCard />
+
+          <SavedProjectsPanel
+            projects={savedProjects}
+            selectedProjectId={selectedProjectId}
+            isLoading={isProjectsLoading}
+            onRefresh={() => void loadSavedProjects()}
+            onSelect={(savedProject) => void selectSavedProject(savedProject)}
+          />
 
           <SectionCard
             title="Project Context"
@@ -632,6 +721,78 @@ function BrandCard() {
         <MiniStat label="Memory" value="Postgres" />
       </div>
     </div>
+  );
+}
+
+function SavedProjectsPanel({
+  projects,
+  selectedProjectId,
+  isLoading,
+  onRefresh,
+  onSelect,
+}: {
+  projects: ProjectMemoryProject[];
+  selectedProjectId: string | null;
+  isLoading: boolean;
+  onRefresh: () => void;
+  onSelect: (project: ProjectMemoryProject) => void;
+}) {
+  return (
+    <SectionCard
+      title="Saved Projects"
+      icon={<Database className="h-4 w-4" />}
+      action={
+        <button
+          onClick={onRefresh}
+          disabled={isLoading}
+          className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+        >
+          {isLoading ? "Loading" : "Refresh"}
+        </button>
+      }
+    >
+      {projects.length === 0 ? (
+        <EmptyState text="No saved projects yet. Analyze a repository first." />
+      ) : (
+        <div className="space-y-2">
+          {projects.map((item) => {
+            const selected = item.id === selectedProjectId;
+
+            return (
+              <button
+                key={item.id}
+                onClick={() => onSelect(item)}
+                className={`w-full rounded-2xl border p-3 text-left transition ${
+                  selected
+                    ? "border-blue-400/60 bg-blue-500/15"
+                    : "border-slate-800 bg-slate-900/70 hover:border-blue-400/40 hover:bg-slate-800"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-slate-100">
+                      {item.name ?? item.repo_name ?? "Unnamed project"}
+                    </p>
+                    <p className="mt-1 truncate text-xs text-slate-500">
+                      {item.detected_framework ?? "Unknown framework"} ·{" "}
+                      {item.project_type ?? "unknown"}
+                    </p>
+                  </div>
+                  <StatusPill
+                    value={item.azure_app_url ? "Deployed" : "Tracked"}
+                    compact
+                  />
+                </div>
+
+                <p className="mt-2 truncate text-xs text-slate-400">
+                  {item.repo_url}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </SectionCard>
   );
 }
 
@@ -1011,7 +1172,9 @@ function StatusPill({
             normalized.includes("deployed") ||
             normalized.includes("published") ||
             normalized.includes("synced") ||
-            normalized.includes("ready")
+            normalized.includes("ready") ||
+            normalized.includes("loaded") ||
+            normalized.includes("tracked")
           ? "good"
           : "neutral";
 
@@ -1061,6 +1224,23 @@ function JsonPreview({ value }: { value: unknown }) {
         {JSON.stringify(value, null, 2)}
       </pre>
     </details>
+  );
+}
+
+function findLatestPullRequestUrl(artifacts: ProjectArtifact[]): string | null {
+  const prArtifact = artifacts.find(
+    (artifact) => artifact.artifact_type === "github_pull_request",
+  );
+
+  if (!prArtifact) {
+    return null;
+  }
+
+  return (
+    prArtifact.url ??
+    getString(prArtifact.metadata_json, "url") ??
+    getString(prArtifact.metadata_json, "html_url") ??
+    getString(prArtifact.metadata_json, "pull_request_url")
   );
 }
 

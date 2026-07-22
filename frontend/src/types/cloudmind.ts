@@ -116,6 +116,22 @@ export interface ProjectContext {
   latest_artifacts: ProjectArtifact[];
 }
 
+export interface ProjectListResponse {
+  status: string;
+  message: string;
+  total: number;
+  limit: number;
+  offset: number;
+  projects: ProjectMemoryProject[];
+}
+
+export interface ProjectDetailResponse {
+  status: string;
+  message: string;
+  project: ProjectMemoryProject;
+  context: ProjectContext;
+}
+
 export interface CloudMindChatResult {
   status: string;
   message: string;
