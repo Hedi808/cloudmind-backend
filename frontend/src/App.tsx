@@ -13,6 +13,7 @@ import {
   History,
   Link as LinkIcon,
   Loader2,
+  PlayCircle,
   RefreshCw,
   Rocket,
   Send,
@@ -65,6 +66,13 @@ const emptyProject = {
   pullRequestUrl: "",
 };
 
+const gitOpsStepIds = [
+  "generate_docker",
+  "generate_kubernetes",
+  "generate_cicd",
+  "generate_azure_files",
+];
+
 const repositoryActions = [
   {
     label: "Analyze Active Project",
@@ -105,6 +113,11 @@ const runtimeActions = [
     icon: Zap,
   },
   {
+    label: "Run Full Pipeline",
+    message: "__run_full_pipeline__",
+    icon: PlayCircle,
+  },
+  {
     label: "Deploy to Azure",
     message: "Deploy this app to Azure",
     icon: Rocket,
@@ -143,6 +156,7 @@ export default function App() {
 
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isPipelineRunning, setIsPipelineRunning] = useState(false);
 
   const [savedProjects, setSavedProjects] = useState<ProjectMemoryProject[]>([]);
   const [isProjectsLoading, setIsProjectsLoading] = useState(false);
@@ -260,7 +274,20 @@ export default function App() {
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading]);
+  }, [messages, isLoading, isWorkflowLoading, isPipelineRunning]);
+
+  const appendAssistantMessage = (content: string, status?: string) => {
+    setMessages((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content,
+        timestamp: nowLabel(),
+        status,
+      },
+    ]);
+  };
 
   const loadSavedProjects = async () => {
     setIsProjectsLoading(true);
@@ -281,24 +308,17 @@ export default function App() {
       repo?: string | null;
       addChatMessage?: boolean;
     },
-  ) => {
+  ): Promise<WorkflowPlanResponse | null> => {
     const projectId = options?.projectId ?? selectedProjectId;
     const repo = options?.repo ?? repoUrl;
 
     if (!projectId && !repo) {
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content:
-            "I need a saved project or repository URL before I can plan the full pipeline.",
-          timestamp: nowLabel(),
-          status: "missing_context",
-        },
-      ]);
+      appendAssistantMessage(
+        "I need a saved project or repository URL before I can plan the full pipeline.",
+        "missing_context",
+      );
 
-      return;
+      return null;
     }
 
     setIsWorkflowLoading(true);
@@ -312,33 +332,19 @@ export default function App() {
       setWorkflowPlan(response);
 
       if (options?.addChatMessage !== false) {
-        setMessages((current) => [
-          ...current,
-          {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: formatWorkflowPlanMessage(response),
-            timestamp: nowLabel(),
-            status: response.status,
-          },
-        ]);
+        appendAssistantMessage(formatWorkflowPlanMessage(response), response.status);
       }
+
+      return response;
     } catch (error) {
       const message =
         error instanceof Error
           ? error.message
           : "Could not load workflow plan.";
 
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: `Could not load workflow plan.\n\n${message}`,
-          timestamp: nowLabel(),
-          status: "failed",
-        },
-      ]);
+      appendAssistantMessage(`Could not load workflow plan.\n\n${message}`, "failed");
+
+      return null;
     } finally {
       setIsWorkflowLoading(false);
     }
@@ -411,59 +417,41 @@ export default function App() {
         addChatMessage: false,
       });
 
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: `Loaded saved project from PostgreSQL memory.\n\nProject: ${
-            response.project.name ?? response.project.repo_name
-          }\nRepository: ${response.project.repo_url}`,
-          timestamp: nowLabel(),
-          status: "loaded",
-        },
-      ]);
+      appendAssistantMessage(
+        `Loaded saved project from PostgreSQL memory.\n\nProject: ${
+          response.project.name ?? response.project.repo_name
+        }\nRepository: ${response.project.repo_url}`,
+        "loaded",
+      );
     } catch (error) {
       const message =
         error instanceof Error
           ? error.message
           : "Could not load saved project.";
 
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: `Could not load saved project.\n\n${message}`,
-          timestamp: nowLabel(),
-          status: "failed",
-        },
-      ]);
+      appendAssistantMessage(`Could not load saved project.\n\n${message}`, "failed");
     } finally {
       setIsProjectsLoading(false);
     }
   };
 
-  const sendMessage = async (messageOverride?: string) => {
-    const content = (messageOverride ?? input).trim();
+  const executeChatCommand = async (
+    content: string,
+    options?: {
+      addUserMessage?: boolean;
+    },
+  ): Promise<CloudMindChatResult | null> => {
+    if (options?.addUserMessage !== false) {
+      const userMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content,
+        timestamp: nowLabel(),
+      };
 
-    if (!content || isLoading) {
-      return;
+      setMessages((current) => [...current, userMessage]);
     }
 
-    if (content === "__workflow_plan__") {
-      await loadWorkflowPlan({ addChatMessage: true });
-      return;
-    }
-
-    const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content,
-      timestamp: nowLabel(),
-    };
-
-    setMessages((current) => [...current, userMessage]);
     setInput("");
     setIsLoading(true);
 
@@ -478,7 +466,7 @@ export default function App() {
         approval_confirmed: approvalConfirmed,
         context: {
           project_mode: projectMode,
-          frontend_phase: "phase_19_workflow_panel",
+          frontend_phase: "phase_20_full_pipeline_executor",
         },
       });
 
@@ -513,25 +501,42 @@ export default function App() {
       };
 
       setMessages((current) => [...current, assistantMessage]);
+
+      return result;
     } catch (error) {
       const message =
         error instanceof Error
           ? error.message
           : "CloudMind frontend could not reach the backend.";
 
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: `Request failed.\n\n${message}`,
-          status: "failed",
-          timestamp: nowLabel(),
-        },
-      ]);
+      appendAssistantMessage(`Request failed.\n\n${message}`, "failed");
+
+      return null;
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const sendMessage = async (
+    messageOverride?: string,
+  ): Promise<CloudMindChatResult | null> => {
+    const content = (messageOverride ?? input).trim();
+
+    if (!content || isLoading || isWorkflowLoading || isPipelineRunning) {
+      return null;
+    }
+
+    if (content === "__workflow_plan__") {
+      await loadWorkflowPlan({ addChatMessage: true });
+      return null;
+    }
+
+    if (content === "__run_full_pipeline__") {
+      await runFullPipeline();
+      return null;
+    }
+
+    return executeChatCommand(content, { addUserMessage: true });
   };
 
   const runNextWorkflowStep = async () => {
@@ -541,7 +546,129 @@ export default function App() {
       return;
     }
 
-    await sendMessage(nextMessage);
+    await executeChatCommand(nextMessage, { addUserMessage: true });
+  };
+
+  const runFullPipeline = async () => {
+    if (isPipelineRunning || isLoading || isWorkflowLoading) {
+      return;
+    }
+
+    setIsPipelineRunning(true);
+
+    appendAssistantMessage(
+      "Starting full pipeline executor.\n\nCloudMind will execute the next safe workflow steps in order. It will stop before any step that needs missing human approval or manual PR review.",
+      "pipeline_started",
+    );
+
+    try {
+      let plan = await loadWorkflowPlan({ addChatMessage: false });
+      const maxSteps = 8;
+
+      for (let index = 0; index < maxSteps; index += 1) {
+        if (!plan) {
+          appendAssistantMessage(
+            "Pipeline stopped because no workflow plan could be loaded.",
+            "pipeline_stopped",
+          );
+          break;
+        }
+
+        const nextStep = plan.next_step;
+
+        if (!nextStep) {
+          appendAssistantMessage(
+            "Full pipeline complete. No next step is required.",
+            "pipeline_complete",
+          );
+          break;
+        }
+
+        if (
+          plan.status === "workflow_ready" &&
+          nextStep.status === "optional" &&
+          nextStep.id !== "final_demo_report"
+        ) {
+          appendAssistantMessage(
+            `Main pipeline is already ready.\n\nOptional remaining step: ${nextStep.title}\nReason: ${nextStep.reason}\n\nCloudMind will not run optional GitOps work automatically. You can run it manually if needed.`,
+            "pipeline_ready",
+          );
+          break;
+        }
+
+        if (nextStep.status === "blocked") {
+          appendAssistantMessage(
+            `Pipeline stopped because the next step is blocked.\n\nStep: ${nextStep.title}\nReason: ${nextStep.reason}`,
+            "pipeline_blocked",
+          );
+          break;
+        }
+
+        if (!nextStep.user_message) {
+          appendAssistantMessage(
+            `Pipeline stopped because the next step has no executable chat command.\n\nStep: ${nextStep.title}`,
+            "pipeline_stopped",
+          );
+          break;
+        }
+
+        if (nextStep.requires_approval && !approvalConfirmed) {
+          appendAssistantMessage(
+            `Pipeline paused for human approval.\n\nNext step: ${nextStep.title}\nReason: ${nextStep.reason}\n\nTick the Human approval checkbox, then run the pipeline again.`,
+            "approval_required",
+          );
+          break;
+        }
+
+        appendAssistantMessage(
+          `Pipeline executing step ${index + 1}.\n\nStep: ${nextStep.title}`,
+          "pipeline_executing",
+        );
+
+        const result = await executeChatCommand(nextStep.user_message, {
+          addUserMessage: true,
+        });
+
+        if (!result) {
+          appendAssistantMessage(
+            "Pipeline stopped because the executed step did not return a valid result.",
+            "pipeline_stopped",
+          );
+          break;
+        }
+
+        if (gitOpsStepIds.includes(nextStep.id)) {
+          appendAssistantMessage(
+            `Pipeline paused after a GitOps step.\n\nStep executed: ${nextStep.title}\n\nReview and merge the generated pull request if one was created, then run the pipeline again. CloudMind pauses here to avoid stacking unreviewed infrastructure PRs.`,
+            "manual_review_required",
+          );
+          break;
+        }
+
+        const nextProjectId =
+          result.project_id ?? result.project_context?.project?.id ?? selectedProjectId;
+        const nextRepo = result.conversation_state?.repo_url ?? repoUrl;
+
+        plan = await loadWorkflowPlan({
+          projectId: nextProjectId,
+          repo: nextRepo,
+          addChatMessage: false,
+        });
+
+        if (
+          plan?.status === "workflow_ready" &&
+          (!plan.next_step || plan.next_step.id !== "final_demo_report")
+        ) {
+          appendAssistantMessage(
+            "Full pipeline complete. Required workflow steps are ready.",
+            "pipeline_complete",
+          );
+          break;
+        }
+      }
+    } finally {
+      setIsPipelineRunning(false);
+    }
   };
 
   const useDemoProject = () => {
@@ -672,7 +799,7 @@ export default function App() {
             <ToolButtonGrid
               actions={repositoryActions}
               onRun={sendMessage}
-              disabled={isLoading || isWorkflowLoading}
+              disabled={isLoading || isWorkflowLoading || isPipelineRunning}
             />
           </SectionCard>
 
@@ -680,7 +807,7 @@ export default function App() {
             <ToolButtonGrid
               actions={runtimeActions}
               onRun={sendMessage}
-              disabled={isLoading || isWorkflowLoading}
+              disabled={isLoading || isWorkflowLoading || isPipelineRunning}
             />
           </SectionCard>
         </aside>
@@ -694,7 +821,7 @@ export default function App() {
                   <h1 className="text-lg font-semibold">CloudMind Console</h1>
                 </div>
                 <p className="mt-1 text-sm text-slate-400">
-                  Conversational DevOps with PostgreSQL memory and dependency-aware workflows.
+                  Conversational DevOps with PostgreSQL memory, workflow planning, and safe pipeline execution.
                 </p>
               </div>
 
@@ -707,7 +834,7 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => sendMessage("What can you do?")}
-                  disabled={isLoading || isWorkflowLoading}
+                  disabled={isLoading || isWorkflowLoading || isPipelineRunning}
                   className="rounded-xl border border-blue-400/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-100 transition hover:bg-blue-500/20 disabled:opacity-50"
                 >
                   Help
@@ -723,16 +850,18 @@ export default function App() {
               ))}
             </AnimatePresence>
 
-            {(isLoading || isWorkflowLoading) && (
+            {(isLoading || isWorkflowLoading || isPipelineRunning) && (
               <motion.div
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm text-slate-300"
               >
                 <Loader2 className="h-4 w-4 animate-spin text-blue-300" />
-                {isWorkflowLoading
-                  ? "CloudMind is planning the workflow from PostgreSQL memory..."
-                  : "CloudMind is thinking, calling tools, and updating memory..."}
+                {isPipelineRunning
+                  ? "CloudMind is running the full pipeline executor..."
+                  : isWorkflowLoading
+                    ? "CloudMind is planning the workflow from PostgreSQL memory..."
+                    : "CloudMind is thinking, calling tools, and updating memory..."}
               </motion.div>
             )}
 
@@ -750,15 +879,20 @@ export default function App() {
                     void sendMessage();
                   }
                 }}
-                placeholder="Ask CloudMind to analyze, publish PRs, deploy to Azure, check status, or generate the final report..."
+                placeholder="Ask CloudMind to analyze, publish PRs, deploy to Azure, check status, run the full pipeline, or generate the final report..."
                 className="min-h-[54px] flex-1 resize-none rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-blue-400"
               />
               <button
                 onClick={() => sendMessage()}
-                disabled={isLoading || isWorkflowLoading || !input.trim()}
+                disabled={
+                  isLoading ||
+                  isWorkflowLoading ||
+                  isPipelineRunning ||
+                  !input.trim()
+                }
                 className="flex h-[54px] w-[54px] items-center justify-center rounded-2xl bg-blue-500 text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {isLoading || isWorkflowLoading ? (
+                {isLoading || isWorkflowLoading || isPipelineRunning ? (
                   <Loader2 className="h-5 w-5 animate-spin" />
                 ) : (
                   <Send className="h-5 w-5" />
@@ -771,7 +905,7 @@ export default function App() {
                 <button
                   key={`${suggestion.label}-${suggestion.message}`}
                   onClick={() => sendMessage(suggestion.message)}
-                  disabled={isLoading || isWorkflowLoading}
+                  disabled={isLoading || isWorkflowLoading || isPipelineRunning}
                   className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
                 >
                   {suggestion.label}
@@ -801,9 +935,11 @@ export default function App() {
           <WorkflowPanel
             workflowPlan={workflowPlan}
             isLoading={isWorkflowLoading}
+            isPipelineRunning={isPipelineRunning}
             approvalConfirmed={approvalConfirmed}
             onRefresh={() => void loadWorkflowPlan({ addChatMessage: true })}
             onRunNext={() => void runNextWorkflowStep()}
+            onRunPipeline={() => void runFullPipeline()}
           />
 
           <ProjectMemoryPanel
@@ -846,7 +982,7 @@ function BrandCard() {
 
       <p className="mt-4 text-sm leading-6 text-slate-300">
         Analyze repos, create GitOps pull requests, deploy to Azure Container
-        Apps, verify health, analyze incidents, plan workflows, and keep durable project memory.
+        Apps, verify health, analyze incidents, plan workflows, run safe pipeline steps, and keep durable project memory.
       </p>
 
       <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
@@ -933,15 +1069,19 @@ function SavedProjectsPanel({
 function WorkflowPanel({
   workflowPlan,
   isLoading,
+  isPipelineRunning,
   approvalConfirmed,
   onRefresh,
   onRunNext,
+  onRunPipeline,
 }: {
   workflowPlan: WorkflowPlanResponse | null;
   isLoading: boolean;
+  isPipelineRunning: boolean;
   approvalConfirmed: boolean;
   onRefresh: () => void;
   onRunNext: () => void;
+  onRunPipeline: () => void;
 }) {
   const nextStep = workflowPlan?.next_step ?? null;
   const requiresApproval = nextStep?.requires_approval === true;
@@ -954,7 +1094,7 @@ function WorkflowPanel({
       action={
         <button
           onClick={onRefresh}
-          disabled={isLoading}
+          disabled={isLoading || isPipelineRunning}
           className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
         >
           {isLoading ? "Planning" : "Refresh"}
@@ -962,7 +1102,16 @@ function WorkflowPanel({
       }
     >
       {!workflowPlan ? (
-        <EmptyState text="No workflow plan yet. Click Plan Full Pipeline." />
+        <div className="space-y-3">
+          <EmptyState text="No workflow plan yet. Click Plan Full Pipeline." />
+          <button
+            onClick={onRunPipeline}
+            disabled={isLoading || isPipelineRunning}
+            className="w-full rounded-xl bg-blue-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isPipelineRunning ? "Running Pipeline..." : "Run Full Pipeline"}
+          </button>
+        </div>
       ) : (
         <div className="space-y-4">
           <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
@@ -1016,6 +1165,14 @@ function WorkflowPanel({
             </div>
           </div>
 
+          <button
+            onClick={onRunPipeline}
+            disabled={isLoading || isPipelineRunning}
+            className="w-full rounded-xl bg-emerald-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isPipelineRunning ? "Running Pipeline..." : "Run Full Pipeline"}
+          </button>
+
           {nextStep && (
             <div className="rounded-2xl border border-blue-400/30 bg-blue-500/10 p-3">
               <div className="flex items-start justify-between gap-3">
@@ -1042,7 +1199,7 @@ function WorkflowPanel({
               {nextStep.user_message && (
                 <button
                   onClick={onRunNext}
-                  disabled={isLoading || approvalMissing}
+                  disabled={isLoading || isPipelineRunning || approvalMissing}
                   className="mt-3 w-full rounded-xl bg-blue-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Run Next Recommended Step
@@ -1164,7 +1321,7 @@ function ToolButtonGrid({
     message: string;
     icon: LucideIcon;
   }[];
-  onRun: (message: string) => void;
+  onRun: (message: string) => Promise<CloudMindChatResult | null>;
   disabled: boolean;
 }) {
   return (
@@ -1175,7 +1332,7 @@ function ToolButtonGrid({
         return (
           <button
             key={action.label}
-            onClick={() => onRun(action.message)}
+            onClick={() => void onRun(action.message)}
             disabled={disabled}
             className="flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/80 px-3 py-2.5 text-left text-sm text-slate-200 transition hover:border-blue-400/50 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -1473,7 +1630,8 @@ function StatusPill({
           normalized.includes("unknown") ||
           normalized.includes("waiting") ||
           normalized.includes("not available") ||
-          normalized.includes("blocked")
+          normalized.includes("blocked") ||
+          normalized.includes("approval")
         ? "warn"
         : normalized.includes("healthy") ||
             normalized.includes("success") ||
@@ -1483,7 +1641,8 @@ function StatusPill({
             normalized.includes("ready") ||
             normalized.includes("loaded") ||
             normalized.includes("tracked") ||
-            normalized.includes("completed")
+            normalized.includes("completed") ||
+            normalized.includes("complete")
           ? "good"
           : "neutral";
 
