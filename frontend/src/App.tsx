@@ -75,7 +75,7 @@ const gitOpsStepIds = [
 
 const repositoryActions = [
   {
-    label: "Analyze Active Project",
+    label: "Analyze Project",
     message: "Analyze this repository",
     icon: Code2,
   },
@@ -108,22 +108,22 @@ const repositoryActions = [
 
 const runtimeActions = [
   {
-    label: "Plan Full Pipeline",
+    label: "Plan Pipeline",
     message: "__workflow_plan__",
     icon: Zap,
   },
   {
-    label: "Run Full Pipeline",
+    label: "Run Pipeline",
     message: "__run_full_pipeline__",
     icon: PlayCircle,
   },
   {
-    label: "Deploy to Azure",
+    label: "Deploy Azure",
     message: "Deploy this app to Azure",
     icon: Rocket,
   },
   {
-    label: "Check Azure Status",
+    label: "Azure Status",
     message: "Check Azure status",
     icon: Activity,
   },
@@ -133,12 +133,7 @@ const runtimeActions = [
     icon: ShieldCheck,
   },
   {
-    label: "Plan Remediation",
-    message: "Plan remediation for this Azure app",
-    icon: AlertTriangle,
-  },
-  {
-    label: "Final Demo Report",
+    label: "Final Report",
     message: "Generate the final demo report",
     icon: FileText,
   },
@@ -170,7 +165,7 @@ export default function App() {
       id: "welcome",
       role: "assistant",
       content:
-        "CloudMind is ready. Add a GitHub repository, analyze it, publish DevOps changes through PRs, deploy to Azure, and track everything in PostgreSQL project memory.",
+        "CloudMind is ready. Select a project, plan the pipeline, deploy safely, verify health, and generate a final demo report.",
       timestamp: nowLabel(),
     },
   ]);
@@ -250,7 +245,7 @@ export default function App() {
       azureHealthy: azureHealthy ? "Healthy" : "Unknown",
       logsAvailable: logsAvailable === true ? "Yes" : "Unknown",
       incidentDetected,
-      prState: prArtifact?.url ? "PR tracked in memory" : "Not available yet",
+      prState: prArtifact?.url ? "PR tracked" : "Not available yet",
       ci:
         workflowPlan?.steps.find((step) => step.id === "generate_cicd")
           ?.status ??
@@ -466,7 +461,7 @@ export default function App() {
         approval_confirmed: approvalConfirmed,
         context: {
           project_mode: projectMode,
-          frontend_phase: "phase_20_full_pipeline_executor",
+          frontend_phase: "phase_20_ui_polish",
         },
       });
 
@@ -707,10 +702,10 @@ export default function App() {
   };
 
   return (
-    <main className="min-h-screen px-4 py-4 text-slate-100 md:px-6">
-      <div className="mx-auto grid max-w-[1800px] gap-4 xl:grid-cols-[360px_minmax(0,1fr)_430px]">
-        <aside className="space-y-4">
-          <BrandCard />
+    <main className="h-screen overflow-hidden px-4 py-4 text-slate-100 md:px-5">
+      <div className="mx-auto grid h-full max-w-[1900px] gap-4 xl:grid-cols-[340px_minmax(640px,1fr)_420px]">
+        <aside className="custom-scrollbar min-h-0 space-y-4 overflow-y-auto pr-1">
+          <BrandCard workflowPlan={workflowPlan} />
 
           <SavedProjectsPanel
             projects={savedProjects}
@@ -733,13 +728,13 @@ export default function App() {
             <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={useDemoProject}
-                className="rounded-xl border border-blue-400/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-100 transition hover:bg-blue-500/20"
+                className="rounded-2xl border border-blue-400/25 bg-blue-500/10 px-3 py-2.5 text-sm text-blue-100 transition hover:bg-blue-500/20"
               >
                 Demo Project
               </button>
               <button
                 onClick={useNewProject}
-                className="rounded-xl border border-slate-700 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 transition hover:bg-slate-800"
+                className="rounded-2xl border border-slate-700/80 bg-slate-950/70 px-3 py-2.5 text-sm text-slate-200 transition hover:bg-slate-800"
               >
                 New Project
               </button>
@@ -772,7 +767,7 @@ export default function App() {
               />
             </div>
 
-            <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3">
+            <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-2xl border border-amber-400/25 bg-amber-400/10 p-3">
               <input
                 type="checkbox"
                 checked={approvalConfirmed}
@@ -808,34 +803,49 @@ export default function App() {
               actions={runtimeActions}
               onRun={sendMessage}
               disabled={isLoading || isWorkflowLoading || isPipelineRunning}
+              highlightSecond
             />
           </SectionCard>
         </aside>
 
-        <section className="flex min-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-3xl border border-slate-700/70 bg-slate-950/70 shadow-2xl shadow-black/30 backdrop-blur">
-          <div className="border-b border-slate-800 px-5 py-4">
+        <section className="glass-card flex min-h-0 flex-col overflow-hidden rounded-[2rem]">
+          <div className="border-b border-slate-700/40 px-5 py-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
-                  <Brain className="h-5 w-5 text-blue-300" />
-                  <h1 className="text-lg font-semibold">CloudMind Console</h1>
+                  <div className="rounded-2xl border border-blue-400/20 bg-blue-400/10 p-2">
+                    <Brain className="h-4 w-4 text-blue-200" />
+                  </div>
+                  <div>
+                    <h1 className="text-base font-semibold text-slate-50">
+                      CloudMind Console
+                    </h1>
+                    <p className="mt-0.5 text-xs text-slate-400">
+                      Safe conversational DevOps with memory and workflow execution.
+                    </p>
+                  </div>
                 </div>
-                <p className="mt-1 text-sm text-slate-400">
-                  Conversational DevOps with PostgreSQL memory, workflow planning, and safe pipeline execution.
-                </p>
               </div>
 
               <div className="flex items-center gap-2">
+                <StatusPill
+                  value={
+                    isPipelineRunning
+                      ? "Pipeline running"
+                      : workflowPlan?.status ?? "Ready"
+                  }
+                  compact
+                />
                 <button
                   onClick={clearChat}
-                  className="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-300 transition hover:bg-slate-800"
+                  className="rounded-2xl border border-slate-700/80 bg-slate-950/70 px-3 py-2 text-sm text-slate-300 transition hover:bg-slate-800"
                 >
-                  Clear Chat
+                  Clear
                 </button>
                 <button
                   onClick={() => sendMessage("What can you do?")}
                   disabled={isLoading || isWorkflowLoading || isPipelineRunning}
-                  className="rounded-xl border border-blue-400/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-100 transition hover:bg-blue-500/20 disabled:opacity-50"
+                  className="rounded-2xl border border-blue-400/25 bg-blue-500/10 px-3 py-2 text-sm text-blue-100 transition hover:bg-blue-500/20 disabled:opacity-50"
                 >
                   Help
                 </button>
@@ -843,7 +853,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
+          <div className="grid-noise custom-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5">
             <AnimatePresence initial={false}>
               {messages.map((message) => (
                 <ChatBubble key={message.id} message={message} />
@@ -854,21 +864,21 @@ export default function App() {
               <motion.div
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm text-slate-300"
+                className="flex items-center gap-3 rounded-3xl border border-blue-400/20 bg-blue-500/10 px-4 py-3 text-sm text-blue-100"
               >
                 <Loader2 className="h-4 w-4 animate-spin text-blue-300" />
                 {isPipelineRunning
                   ? "CloudMind is running the full pipeline executor..."
                   : isWorkflowLoading
                     ? "CloudMind is planning the workflow from PostgreSQL memory..."
-                    : "CloudMind is thinking, calling tools, and updating memory..."}
+                    : "CloudMind is calling tools and updating memory..."}
               </motion.div>
             )}
 
             <div ref={chatEndRef} />
           </div>
 
-          <div className="border-t border-slate-800 p-4">
+          <div className="border-t border-slate-700/40 bg-slate-950/70 p-4">
             <div className="flex gap-3">
               <textarea
                 value={input}
@@ -879,8 +889,8 @@ export default function App() {
                     void sendMessage();
                   }
                 }}
-                placeholder="Ask CloudMind to analyze, publish PRs, deploy to Azure, check status, run the full pipeline, or generate the final report..."
-                className="min-h-[54px] flex-1 resize-none rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-blue-400"
+                placeholder="Ask CloudMind to analyze, deploy, verify, run pipeline, or generate the final report..."
+                className="custom-scrollbar min-h-[54px] max-h-32 flex-1 resize-none rounded-3xl border border-slate-700/80 bg-slate-950/90 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-blue-400"
               />
               <button
                 onClick={() => sendMessage()}
@@ -890,7 +900,7 @@ export default function App() {
                   isPipelineRunning ||
                   !input.trim()
                 }
-                className="flex h-[54px] w-[54px] items-center justify-center rounded-2xl bg-blue-500 text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex h-[54px] w-[54px] items-center justify-center rounded-3xl bg-blue-500 text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isLoading || isWorkflowLoading || isPipelineRunning ? (
                   <Loader2 className="h-5 w-5 animate-spin" />
@@ -906,7 +916,7 @@ export default function App() {
                   key={`${suggestion.label}-${suggestion.message}`}
                   onClick={() => sendMessage(suggestion.message)}
                   disabled={isLoading || isWorkflowLoading || isPipelineRunning}
-                  className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+                  className="rounded-full border border-slate-700/80 bg-slate-900 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
                 >
                   {suggestion.label}
                 </button>
@@ -915,22 +925,8 @@ export default function App() {
           </div>
         </section>
 
-        <aside className="space-y-4">
-          <SectionCard
-            title="Mission Status"
-            icon={<Zap className="h-4 w-4" />}
-            action={<StatusPill value={missionStatus.status} />}
-          >
-            <Metric label="Recommendation" value={missionStatus.recommendation} />
-            <Metric label="Azure healthy" value={missionStatus.azureHealthy} />
-            <Metric label="Logs available" value={missionStatus.logsAvailable} />
-            <Metric
-              label="Incident detected"
-              value={missionStatus.incidentDetected}
-            />
-            <Metric label="PR state" value={missionStatus.prState} />
-            <Metric label="CI" value={missionStatus.ci} />
-          </SectionCard>
+        <aside className="custom-scrollbar min-h-0 space-y-4 overflow-y-auto pr-1">
+          <MissionStatusPanel missionStatus={missionStatus} />
 
           <WorkflowPanel
             workflowPlan={workflowPlan}
@@ -967,28 +963,34 @@ export default function App() {
   );
 }
 
-function BrandCard() {
+function BrandCard({ workflowPlan }: { workflowPlan: WorkflowPlanResponse | null }) {
   return (
-    <div className="overflow-hidden rounded-3xl border border-blue-400/20 bg-gradient-to-br from-blue-500/20 via-slate-950 to-emerald-500/10 p-5 shadow-2xl shadow-black/20">
-      <div className="flex items-center gap-3">
-        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-500/20">
+    <div className="relative overflow-hidden rounded-[2rem] border border-blue-400/20 bg-gradient-to-br from-blue-500/20 via-slate-950 to-emerald-500/10 p-5 shadow-2xl shadow-black/20">
+      <div className="absolute -right-12 -top-12 h-36 w-36 rounded-full bg-blue-500/20 blur-3xl" />
+      <div className="absolute -bottom-16 left-4 h-32 w-32 rounded-full bg-emerald-500/10 blur-3xl" />
+
+      <div className="relative flex items-center gap-3">
+        <div className="flex h-12 w-12 items-center justify-center rounded-3xl bg-blue-500/20 ring-1 ring-blue-300/20">
           <Bot className="h-7 w-7 text-blue-200" />
         </div>
         <div>
-          <h2 className="text-xl font-bold">CloudMind</h2>
+          <h2 className="text-xl font-bold tracking-tight">CloudMind</h2>
           <p className="text-sm text-slate-300">Multi-agent DevOps OS</p>
         </div>
       </div>
 
-      <p className="mt-4 text-sm leading-6 text-slate-300">
-        Analyze repos, create GitOps pull requests, deploy to Azure Container
-        Apps, verify health, analyze incidents, plan workflows, run safe pipeline steps, and keep durable project memory.
+      <p className="relative mt-4 text-sm leading-6 text-slate-300">
+        From repository analysis to GitOps, Azure deployment, health checks,
+        incident analysis, and persistent PostgreSQL memory.
       </p>
 
-      <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
+      <div className="relative mt-5 grid grid-cols-3 gap-2 text-center text-xs">
         <MiniStat label="GitOps" value="PR" />
         <MiniStat label="Cloud" value="Azure" />
-        <MiniStat label="Memory" value="Postgres" />
+        <MiniStat
+          label="Progress"
+          value={`${workflowPlan?.summary.progress_percent ?? 0}%`}
+        />
       </div>
     </div>
   );
@@ -1012,13 +1014,11 @@ function SavedProjectsPanel({
       title="Saved Projects"
       icon={<Database className="h-4 w-4" />}
       action={
-        <button
+        <IconButton
+          label={isLoading ? "Loading" : "Refresh"}
           onClick={onRefresh}
           disabled={isLoading}
-          className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
-        >
-          {isLoading ? "Loading" : "Refresh"}
-        </button>
+        />
       }
     >
       {projects.length === 0 ? (
@@ -1032,10 +1032,10 @@ function SavedProjectsPanel({
               <button
                 key={item.id}
                 onClick={() => onSelect(item)}
-                className={`w-full rounded-2xl border p-3 text-left transition ${
+                className={`w-full rounded-3xl border p-3 text-left transition ${
                   selected
-                    ? "border-blue-400/60 bg-blue-500/15"
-                    : "border-slate-800 bg-slate-900/70 hover:border-blue-400/40 hover:bg-slate-800"
+                    ? "border-blue-400/60 bg-blue-500/15 shadow-lg shadow-blue-500/10"
+                    : "border-slate-800 bg-slate-950/50 hover:border-blue-400/40 hover:bg-slate-900"
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
@@ -1044,7 +1044,7 @@ function SavedProjectsPanel({
                       {item.name ?? item.repo_name ?? "Unnamed project"}
                     </p>
                     <p className="mt-1 truncate text-xs text-slate-500">
-                      {item.detected_framework ?? "Unknown framework"} ·{" "}
+                      {item.detected_framework ?? "Unknown"} ·{" "}
                       {item.project_type ?? "unknown"}
                     </p>
                   </div>
@@ -1062,6 +1062,44 @@ function SavedProjectsPanel({
           })}
         </div>
       )}
+    </SectionCard>
+  );
+}
+
+function MissionStatusPanel({
+  missionStatus,
+}: {
+  missionStatus: {
+    status: string;
+    recommendation: string;
+    azureHealthy: string;
+    logsAvailable: string;
+    incidentDetected: string;
+    prState: string;
+    ci: string;
+  };
+}) {
+  return (
+    <SectionCard
+      title="Mission Status"
+      icon={<Zap className="h-4 w-4" />}
+      action={<StatusPill value={missionStatus.status} compact />}
+    >
+      <div className="rounded-3xl border border-emerald-400/20 bg-emerald-400/10 p-4">
+        <p className="text-xs uppercase tracking-[0.2em] text-emerald-200/70">
+          Recommendation
+        </p>
+        <p className="mt-2 text-sm font-semibold leading-6 text-emerald-50">
+          {missionStatus.recommendation}
+        </p>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <HealthTile label="Azure" value={missionStatus.azureHealthy} />
+        <HealthTile label="Incident" value={missionStatus.incidentDetected} />
+        <HealthTile label="PR" value={missionStatus.prState} />
+        <HealthTile label="CI/CD" value={missionStatus.ci} />
+      </div>
     </SectionCard>
   );
 }
@@ -1092,89 +1130,34 @@ function WorkflowPanel({
       title="Workflow Plan"
       icon={<Zap className="h-4 w-4" />}
       action={
-        <button
+        <IconButton
+          label={isLoading ? "Planning" : "Refresh"}
           onClick={onRefresh}
           disabled={isLoading || isPipelineRunning}
-          className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
-        >
-          {isLoading ? "Planning" : "Refresh"}
-        </button>
+        />
       }
     >
       {!workflowPlan ? (
         <div className="space-y-3">
-          <EmptyState text="No workflow plan yet. Click Plan Full Pipeline." />
-          <button
+          <EmptyState text="No workflow plan yet. Click Run Pipeline or Plan Pipeline." />
+          <PrimaryButton
             onClick={onRunPipeline}
             disabled={isLoading || isPipelineRunning}
-            className="w-full rounded-xl bg-blue-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isPipelineRunning ? "Running Pipeline..." : "Run Full Pipeline"}
-          </button>
+            label={isPipelineRunning ? "Running Pipeline..." : "Run Full Pipeline"}
+          />
         </div>
       ) : (
         <div className="space-y-4">
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-slate-100">
-                  {workflowPlan.workflow?.title ?? "Deployment workflow"}
-                </p>
-                <p className="mt-1 text-xs leading-5 text-slate-500">
-                  {workflowPlan.message}
-                </p>
-              </div>
-              <StatusPill value={workflowPlan.status} compact />
-            </div>
+          <WorkflowChart workflowPlan={workflowPlan} />
 
-            <div className="mt-3">
-              <div className="mb-1 flex items-center justify-between text-xs text-slate-500">
-                <span>Progress</span>
-                <span>{workflowPlan.summary.progress_percent}%</span>
-              </div>
-              <div className="h-2 overflow-hidden rounded-full bg-slate-800">
-                <div
-                  className="h-full rounded-full bg-blue-400"
-                  style={{
-                    width: `${Math.min(
-                      Math.max(workflowPlan.summary.progress_percent, 0),
-                      100,
-                    )}%`,
-                  }}
-                />
-              </div>
-            </div>
-
-            <div className="mt-3 grid grid-cols-4 gap-2 text-center text-xs">
-              <MiniStat
-                label="Done"
-                value={String(workflowPlan.summary.completed)}
-              />
-              <MiniStat
-                label="Required"
-                value={String(workflowPlan.summary.required)}
-              />
-              <MiniStat
-                label="Blocked"
-                value={String(workflowPlan.summary.blocked)}
-              />
-              <MiniStat
-                label="Optional"
-                value={String(workflowPlan.summary.optional)}
-              />
-            </div>
-          </div>
-
-          <button
+          <PrimaryButton
             onClick={onRunPipeline}
             disabled={isLoading || isPipelineRunning}
-            className="w-full rounded-xl bg-emerald-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isPipelineRunning ? "Running Pipeline..." : "Run Full Pipeline"}
-          </button>
+            label={isPipelineRunning ? "Running Pipeline..." : "Run Full Pipeline"}
+          />
 
           {nextStep && (
-            <div className="rounded-2xl border border-blue-400/30 bg-blue-500/10 p-3">
+            <div className="rounded-3xl border border-blue-400/25 bg-blue-500/10 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-blue-100">
@@ -1191,8 +1174,8 @@ function WorkflowPanel({
               </div>
 
               {approvalMissing && (
-                <p className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-100">
-                  This next step needs human approval. Tick the approval checkbox first.
+                <p className="mt-3 rounded-2xl border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-100">
+                  Tick the approval checkbox before running this step.
                 </p>
               )}
 
@@ -1200,7 +1183,7 @@ function WorkflowPanel({
                 <button
                   onClick={onRunNext}
                   disabled={isLoading || isPipelineRunning || approvalMissing}
-                  className="mt-3 w-full rounded-xl bg-blue-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="mt-3 w-full rounded-2xl border border-blue-400/30 bg-blue-500/20 px-3 py-2 text-sm font-medium text-blue-50 transition hover:bg-blue-500/30 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Run Next Recommended Step
                 </button>
@@ -1209,8 +1192,8 @@ function WorkflowPanel({
           )}
 
           <div className="space-y-2">
-            {workflowPlan.steps.map((step) => (
-              <WorkflowStepCard key={step.id} step={step} />
+            {workflowPlan.steps.map((step, index) => (
+              <WorkflowStepCard key={step.id} step={step} index={index + 1} />
             ))}
           </div>
         </div>
@@ -1219,25 +1202,114 @@ function WorkflowPanel({
   );
 }
 
-function WorkflowStepCard({ step }: { step: WorkflowStep }) {
+function WorkflowChart({
+  workflowPlan,
+}: {
+  workflowPlan: WorkflowPlanResponse;
+}) {
+  const progress = Math.min(
+    Math.max(workflowPlan.summary.progress_percent, 0),
+    100,
+  );
+  const radius = 43;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (progress / 100) * circumference;
+
   return (
-    <details className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
+    <div className="rounded-[1.7rem] border border-slate-800 bg-slate-950/60 p-4">
+      <div className="flex items-center gap-4">
+        <div className="relative h-28 w-28 shrink-0">
+          <svg className="h-28 w-28 -rotate-90" viewBox="0 0 112 112">
+            <circle
+              cx="56"
+              cy="56"
+              r={radius}
+              stroke="rgba(30, 41, 59, 0.95)"
+              strokeWidth="10"
+              fill="transparent"
+            />
+            <circle
+              cx="56"
+              cy="56"
+              r={radius}
+              stroke="rgb(52, 211, 153)"
+              strokeWidth="10"
+              fill="transparent"
+              strokeLinecap="round"
+              strokeDasharray={circumference}
+              strokeDashoffset={offset}
+            />
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className="text-2xl font-bold text-slate-50">{progress}%</span>
+            <span className="text-[11px] text-slate-500">ready</span>
+          </div>
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-slate-50">
+                {workflowPlan.workflow?.title ?? "Deployment Pipeline"}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-slate-500">
+                {workflowPlan.message}
+              </p>
+            </div>
+            <StatusPill value={workflowPlan.status} compact />
+          </div>
+
+          <div className="mt-4 grid grid-cols-4 gap-2">
+            <MiniStat label="Done" value={String(workflowPlan.summary.completed)} />
+            <MiniStat
+              label="Required"
+              value={String(workflowPlan.summary.required)}
+            />
+            <MiniStat
+              label="Blocked"
+              value={String(workflowPlan.summary.blocked)}
+            />
+            <MiniStat
+              label="Optional"
+              value={String(workflowPlan.summary.optional)}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WorkflowStepCard({
+  step,
+  index,
+}: {
+  step: WorkflowStep;
+  index: number;
+}) {
+  return (
+    <details className="soft-card rounded-3xl p-3">
       <summary className="cursor-pointer list-none">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl border border-slate-700 bg-slate-950 text-xs font-semibold text-slate-300">
+            {index}
+          </div>
+          <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-slate-100">
               {step.title}
             </p>
             <p className="mt-1 truncate text-xs text-slate-500">
-              {step.category} · depends on{" "}
-              {step.depends_on.length > 0 ? step.depends_on.join(", ") : "nothing"}
+              {step.category} ·{" "}
+              {step.depends_on.length > 0
+                ? `depends on ${step.depends_on.join(", ")}`
+                : "no dependency"}
             </p>
           </div>
           <StatusPill value={step.status} compact />
         </div>
       </summary>
 
-      <div className="mt-3 space-y-2 text-xs leading-5 text-slate-400">
+      <div className="mt-3 space-y-2 pl-11 text-xs leading-5 text-slate-400">
         <p>{step.description}</p>
         <p className="text-slate-500">{step.reason}</p>
 
@@ -1246,7 +1318,7 @@ function WorkflowStepCard({ step }: { step: WorkflowStep }) {
         )}
 
         {step.evidence.length > 0 && (
-          <div className="rounded-xl bg-slate-950 p-2">
+          <div className="rounded-2xl bg-slate-950/80 p-3">
             <p className="mb-1 text-slate-500">Evidence</p>
             <ul className="list-inside list-disc space-y-1">
               {step.evidence.map((item) => (
@@ -1272,7 +1344,7 @@ function SectionCard({
   children: ReactNode;
 }) {
   return (
-    <div className="rounded-3xl border border-slate-700/70 bg-slate-950/70 p-4 shadow-xl shadow-black/20 backdrop-blur">
+    <div className="glass-card rounded-[2rem] p-4">
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
           <span className="text-blue-300">{icon}</span>
@@ -1298,14 +1370,14 @@ function Field({
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-slate-400">
+      <span className="mb-1.5 block text-xs font-medium text-slate-400">
         {label}
       </span>
       <input
         value={value}
         onChange={(event) => onChange(event.currentTarget.value)}
         placeholder={placeholder}
-        className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-blue-400"
+        className="w-full rounded-2xl border border-slate-700/80 bg-slate-950/80 px-3 py-2.5 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-blue-400"
       />
     </label>
   );
@@ -1315,6 +1387,7 @@ function ToolButtonGrid({
   actions,
   onRun,
   disabled,
+  highlightSecond = false,
 }: {
   actions: {
     label: string;
@@ -1323,18 +1396,24 @@ function ToolButtonGrid({
   }[];
   onRun: (message: string) => Promise<CloudMindChatResult | null>;
   disabled: boolean;
+  highlightSecond?: boolean;
 }) {
   return (
     <div className="grid gap-2">
-      {actions.map((action) => {
+      {actions.map((action, index) => {
         const Icon = action.icon;
+        const highlighted = highlightSecond && index === 1;
 
         return (
           <button
             key={action.label}
             onClick={() => void onRun(action.message)}
             disabled={disabled}
-            className="flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/80 px-3 py-2.5 text-left text-sm text-slate-200 transition hover:border-blue-400/50 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            className={`flex items-center gap-3 rounded-2xl border px-3 py-2.5 text-left text-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${
+              highlighted
+                ? "border-emerald-400/25 bg-emerald-500/15 text-emerald-50 hover:bg-emerald-500/25"
+                : "border-slate-700/80 bg-slate-950/60 text-slate-200 hover:border-blue-400/40 hover:bg-slate-900"
+            }`}
           >
             <Icon className="h-4 w-4 text-blue-300" />
             <span>{action.label}</span>
@@ -1356,10 +1435,10 @@ function ChatBubble({ message }: { message: ChatMessage }) {
       className={`flex ${isUser ? "justify-end" : "justify-start"}`}
     >
       <div
-        className={`max-w-[86%] rounded-3xl border px-4 py-3 ${
+        className={`max-w-[86%] rounded-[1.6rem] border px-4 py-3 ${
           isUser
-            ? "border-blue-400/30 bg-blue-500/20"
-            : "border-slate-700 bg-slate-900/80"
+            ? "border-blue-400/25 bg-blue-500/15"
+            : "border-slate-700/70 bg-slate-950/75"
         }`}
       >
         <div className="mb-2 flex items-center justify-between gap-3">
@@ -1485,10 +1564,10 @@ function ActionHistoryPanel({ actions }: { actions: ProjectActionRun[] }) {
         <EmptyState text="No stored action runs yet." />
       ) : (
         <div className="space-y-2">
-          {actions.slice(0, 8).map((action) => (
+          {actions.slice(0, 7).map((action) => (
             <div
               key={action.id}
-              className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3"
+              className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3"
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
@@ -1517,10 +1596,10 @@ function ArtifactPanel({ artifacts }: { artifacts: ProjectArtifact[] }) {
         <EmptyState text="No stored artifacts yet." />
       ) : (
         <div className="space-y-2">
-          {artifacts.slice(0, 8).map((artifact) => (
+          {artifacts.slice(0, 7).map((artifact) => (
             <div
               key={artifact.id}
-              className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3"
+              className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3"
             >
               <div className="flex items-start gap-3">
                 <ArtifactIcon type={artifact.artifact_type} />
@@ -1533,7 +1612,7 @@ function ArtifactPanel({ artifacts }: { artifacts: ProjectArtifact[] }) {
                   </p>
 
                   {artifact.path && (
-                    <p className="mt-2 truncate rounded-lg bg-slate-950 px-2 py-1 text-xs text-slate-400">
+                    <p className="mt-2 truncate rounded-xl bg-slate-950 px-2 py-1 text-xs text-slate-400">
                       {artifact.path}
                     </p>
                   )}
@@ -1575,6 +1654,17 @@ function ArtifactIcon({ type }: { type: string }) {
   return <FileText className="mt-0.5 h-4 w-4 text-slate-300" />;
 }
 
+function HealthTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3">
+      <p className="text-[11px] text-slate-500">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold text-slate-100">
+        {value}
+      </p>
+    </div>
+  );
+}
+
 function Metric({
   label,
   value,
@@ -1587,7 +1677,7 @@ function Metric({
   const finalValue = value || "Not available";
 
   return (
-    <div className="border-b border-slate-800 py-2 last:border-b-0">
+    <div className="border-b border-slate-800/80 py-2 last:border-b-0">
       <p className="text-xs text-slate-500">{label}</p>
       {isLink && finalValue.startsWith("http") ? (
         <a
@@ -1607,8 +1697,8 @@ function Metric({
 
 function MiniStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-3">
-      <p className="text-[11px] text-slate-500">{label}</p>
+    <div className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-2.5">
+      <p className="text-[10px] text-slate-500">{label}</p>
       <p className="mt-1 font-semibold text-slate-100">{value}</p>
     </div>
   );
@@ -1676,19 +1766,59 @@ function StatusPill({
 
 function EmptyState({ text }: { text: string }) {
   return (
-    <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/40 p-4 text-center text-sm text-slate-500">
+    <div className="rounded-3xl border border-dashed border-slate-700 bg-slate-950/40 p-4 text-center text-sm text-slate-500">
       {text}
     </div>
+  );
+}
+
+function IconButton({
+  label,
+  onClick,
+  disabled,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="rounded-full border border-slate-700/80 bg-slate-950/70 px-2.5 py-1 text-xs text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+    >
+      {label}
+    </button>
+  );
+}
+
+function PrimaryButton({
+  label,
+  onClick,
+  disabled,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="w-full rounded-2xl bg-emerald-500 px-3 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-500/15 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {label}
+    </button>
   );
 }
 
 function JsonPreview({ value }: { value: unknown }) {
   return (
     <details className="group">
-      <summary className="cursor-pointer rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-300 transition hover:bg-slate-800">
+      <summary className="cursor-pointer rounded-2xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-sm text-slate-300 transition hover:bg-slate-900">
         View JSON
       </summary>
-      <pre className="mt-3 max-h-[360px] overflow-auto rounded-2xl border border-slate-800 bg-slate-950 p-3 text-xs leading-5 text-slate-300">
+      <pre className="custom-scrollbar mt-3 max-h-[360px] overflow-auto rounded-2xl border border-slate-800 bg-slate-950 p-3 text-xs leading-5 text-slate-300">
         {JSON.stringify(value, null, 2)}
       </pre>
     </details>
