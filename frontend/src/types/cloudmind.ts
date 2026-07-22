@@ -132,6 +132,52 @@ export interface ProjectDetailResponse {
   context: ProjectContext;
 }
 
+export interface WorkflowPlanRequest {
+  project_id?: string | null;
+  repo_url?: string | null;
+}
+
+export interface WorkflowStep {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  status: string;
+  requires_approval: boolean;
+  can_execute_now: boolean;
+  tool_intent?: string | null;
+  user_message?: string | null;
+  depends_on: string[];
+  evidence: string[];
+  reason: string;
+}
+
+export interface WorkflowDefinition {
+  id: string;
+  title: string;
+  description: string;
+}
+
+export interface WorkflowSummary {
+  total_steps: number;
+  completed: number;
+  required: number;
+  blocked: number;
+  optional: number;
+  progress_percent: number;
+}
+
+export interface WorkflowPlanResponse {
+  status: string;
+  message: string;
+  project?: ProjectMemoryProject | null;
+  workflow?: WorkflowDefinition | null;
+  next_step?: WorkflowStep | null;
+  steps: WorkflowStep[];
+  summary: WorkflowSummary;
+  safety?: Record<string, unknown> | null;
+}
+
 export interface CloudMindChatResult {
   status: string;
   message: string;

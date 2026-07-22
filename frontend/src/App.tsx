@@ -29,6 +29,7 @@ import type { ReactNode } from "react";
 
 import { sendCloudMindMessage } from "./api/cloudmindApi";
 import { getProject, listProjects } from "./api/projectsApi";
+import { getWorkflowPlan } from "./api/workflowsApi";
 import type {
   ChatMessage,
   CloudMindChatResult,
@@ -38,6 +39,8 @@ import type {
   ProjectContext,
   ProjectDeploymentState,
   ProjectMemoryProject,
+  WorkflowPlanResponse,
+  WorkflowStep,
 } from "./types/cloudmind";
 
 const createSessionId = (): string => crypto.randomUUID();
@@ -97,6 +100,11 @@ const repositoryActions = [
 
 const runtimeActions = [
   {
+    label: "Plan Full Pipeline",
+    message: "__workflow_plan__",
+    icon: Zap,
+  },
+  {
     label: "Deploy to Azure",
     message: "Deploy this app to Azure",
     icon: Rocket,
@@ -138,6 +146,10 @@ export default function App() {
 
   const [savedProjects, setSavedProjects] = useState<ProjectMemoryProject[]>([]);
   const [isProjectsLoading, setIsProjectsLoading] = useState(false);
+
+  const [workflowPlan, setWorkflowPlan] =
+    useState<WorkflowPlanResponse | null>(null);
+  const [isWorkflowLoading, setIsWorkflowLoading] = useState(false);
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -190,6 +202,7 @@ export default function App() {
 
     const latestStatus =
       toolResultStatus ??
+      workflowPlan?.status ??
       conversationState?.latest_result_status ??
       latestDeployment?.health_status ??
       "Not available yet";
@@ -204,7 +217,10 @@ export default function App() {
         ? "Yes"
         : latestToolIncidentDetected === false
           ? "No"
-          : "Unknown";
+          : workflowPlan?.steps.find((step) => step.id === "analyze_incident")
+                ?.status === "completed"
+            ? "Checked"
+            : "Unknown";
 
     const prArtifact = latestArtifacts.find(
       (artifact) => artifact.artifact_type === "github_pull_request",
@@ -213,6 +229,7 @@ export default function App() {
     return {
       status: latestStatus,
       recommendation:
+        workflowPlan?.message ??
         demoRecommendation ??
         deploymentRecommendation ??
         "Not available yet",
@@ -221,8 +238,11 @@ export default function App() {
       incidentDetected,
       prState: prArtifact?.url ? "PR tracked in memory" : "Not available yet",
       ci:
+        workflowPlan?.steps.find((step) => step.id === "generate_cicd")
+          ?.status ??
         latestActions.find((action) => action.action_type === "generate_cicd")
-          ?.status ?? "Not available yet",
+          ?.status ??
+        "Not available yet",
     };
   }, [
     conversationState,
@@ -231,6 +251,7 @@ export default function App() {
     latestDeployment,
     latestResult,
     latestToolResult,
+    workflowPlan,
   ]);
 
   useEffect(() => {
@@ -251,6 +272,75 @@ export default function App() {
       setSavedProjects([]);
     } finally {
       setIsProjectsLoading(false);
+    }
+  };
+
+  const loadWorkflowPlan = async (
+    options?: {
+      projectId?: string | null;
+      repo?: string | null;
+      addChatMessage?: boolean;
+    },
+  ) => {
+    const projectId = options?.projectId ?? selectedProjectId;
+    const repo = options?.repo ?? repoUrl;
+
+    if (!projectId && !repo) {
+      setMessages((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content:
+            "I need a saved project or repository URL before I can plan the full pipeline.",
+          timestamp: nowLabel(),
+          status: "missing_context",
+        },
+      ]);
+
+      return;
+    }
+
+    setIsWorkflowLoading(true);
+
+    try {
+      const response = await getWorkflowPlan({
+        project_id: projectId || null,
+        repo_url: projectId ? null : repo || null,
+      });
+
+      setWorkflowPlan(response);
+
+      if (options?.addChatMessage !== false) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: formatWorkflowPlanMessage(response),
+            timestamp: nowLabel(),
+            status: response.status,
+          },
+        ]);
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not load workflow plan.";
+
+      setMessages((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: `Could not load workflow plan.\n\n${message}`,
+          timestamp: nowLabel(),
+          status: "failed",
+        },
+      ]);
+    } finally {
+      setIsWorkflowLoading(false);
     }
   };
 
@@ -315,6 +405,12 @@ export default function App() {
       hydrateFromProjectContext(response.context);
       setProjectMode("custom");
 
+      await loadWorkflowPlan({
+        projectId: response.project.id,
+        repo: response.project.repo_url,
+        addChatMessage: false,
+      });
+
       setMessages((current) => [
         ...current,
         {
@@ -355,6 +451,11 @@ export default function App() {
       return;
     }
 
+    if (content === "__workflow_plan__") {
+      await loadWorkflowPlan({ addChatMessage: true });
+      return;
+    }
+
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -377,7 +478,7 @@ export default function App() {
         approval_confirmed: approvalConfirmed,
         context: {
           project_mode: projectMode,
-          frontend_phase: "phase_18_saved_project_selector",
+          frontend_phase: "phase_19_workflow_panel",
         },
       });
 
@@ -386,6 +487,17 @@ export default function App() {
       setSessionId(result.session_id);
       hydrateFromResult(result);
       void loadSavedProjects();
+
+      const nextProjectId = result.project_id ?? result.project_context?.project?.id;
+      const nextRepo = result.conversation_state?.repo_url ?? repoUrl;
+
+      if (nextProjectId || nextRepo) {
+        void loadWorkflowPlan({
+          projectId: nextProjectId,
+          repo: nextRepo,
+          addChatMessage: false,
+        });
+      }
 
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -422,12 +534,23 @@ export default function App() {
     }
   };
 
+  const runNextWorkflowStep = async () => {
+    const nextMessage = workflowPlan?.next_step?.user_message;
+
+    if (!nextMessage) {
+      return;
+    }
+
+    await sendMessage(nextMessage);
+  };
+
   const useDemoProject = () => {
     setProjectMode("demo");
     setRepoUrl(demoProject.repoUrl);
     setResourceGroup(demoProject.resourceGroup);
     setAppName(demoProject.appName);
     setPullRequestUrl(demoProject.pullRequestUrl);
+    setWorkflowPlan(null);
   };
 
   const useNewProject = () => {
@@ -440,6 +563,7 @@ export default function App() {
     setConversationState(null);
     setLatestResult(null);
     setLatestToolResult(null);
+    setWorkflowPlan(null);
     setSessionId(createSessionId());
   };
 
@@ -548,7 +672,7 @@ export default function App() {
             <ToolButtonGrid
               actions={repositoryActions}
               onRun={sendMessage}
-              disabled={isLoading}
+              disabled={isLoading || isWorkflowLoading}
             />
           </SectionCard>
 
@@ -556,7 +680,7 @@ export default function App() {
             <ToolButtonGrid
               actions={runtimeActions}
               onRun={sendMessage}
-              disabled={isLoading}
+              disabled={isLoading || isWorkflowLoading}
             />
           </SectionCard>
         </aside>
@@ -570,7 +694,7 @@ export default function App() {
                   <h1 className="text-lg font-semibold">CloudMind Console</h1>
                 </div>
                 <p className="mt-1 text-sm text-slate-400">
-                  Conversational DevOps with PostgreSQL project memory.
+                  Conversational DevOps with PostgreSQL memory and dependency-aware workflows.
                 </p>
               </div>
 
@@ -583,7 +707,7 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => sendMessage("What can you do?")}
-                  disabled={isLoading}
+                  disabled={isLoading || isWorkflowLoading}
                   className="rounded-xl border border-blue-400/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-100 transition hover:bg-blue-500/20 disabled:opacity-50"
                 >
                   Help
@@ -599,14 +723,16 @@ export default function App() {
               ))}
             </AnimatePresence>
 
-            {isLoading && (
+            {(isLoading || isWorkflowLoading) && (
               <motion.div
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm text-slate-300"
               >
                 <Loader2 className="h-4 w-4 animate-spin text-blue-300" />
-                CloudMind is thinking, calling tools, and updating memory...
+                {isWorkflowLoading
+                  ? "CloudMind is planning the workflow from PostgreSQL memory..."
+                  : "CloudMind is thinking, calling tools, and updating memory..."}
               </motion.div>
             )}
 
@@ -629,10 +755,10 @@ export default function App() {
               />
               <button
                 onClick={() => sendMessage()}
-                disabled={isLoading || !input.trim()}
+                disabled={isLoading || isWorkflowLoading || !input.trim()}
                 className="flex h-[54px] w-[54px] items-center justify-center rounded-2xl bg-blue-500 text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {isLoading ? (
+                {isLoading || isWorkflowLoading ? (
                   <Loader2 className="h-5 w-5 animate-spin" />
                 ) : (
                   <Send className="h-5 w-5" />
@@ -645,7 +771,7 @@ export default function App() {
                 <button
                   key={`${suggestion.label}-${suggestion.message}`}
                   onClick={() => sendMessage(suggestion.message)}
-                  disabled={isLoading}
+                  disabled={isLoading || isWorkflowLoading}
                   className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
                 >
                   {suggestion.label}
@@ -671,6 +797,14 @@ export default function App() {
             <Metric label="PR state" value={missionStatus.prState} />
             <Metric label="CI" value={missionStatus.ci} />
           </SectionCard>
+
+          <WorkflowPanel
+            workflowPlan={workflowPlan}
+            isLoading={isWorkflowLoading}
+            approvalConfirmed={approvalConfirmed}
+            onRefresh={() => void loadWorkflowPlan({ addChatMessage: true })}
+            onRunNext={() => void runNextWorkflowStep()}
+          />
 
           <ProjectMemoryPanel
             project={project}
@@ -712,7 +846,7 @@ function BrandCard() {
 
       <p className="mt-4 text-sm leading-6 text-slate-300">
         Analyze repos, create GitOps pull requests, deploy to Azure Container
-        Apps, verify health, analyze incidents, and keep durable project memory.
+        Apps, verify health, analyze incidents, plan workflows, and keep durable project memory.
       </p>
 
       <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
@@ -793,6 +927,179 @@ function SavedProjectsPanel({
         </div>
       )}
     </SectionCard>
+  );
+}
+
+function WorkflowPanel({
+  workflowPlan,
+  isLoading,
+  approvalConfirmed,
+  onRefresh,
+  onRunNext,
+}: {
+  workflowPlan: WorkflowPlanResponse | null;
+  isLoading: boolean;
+  approvalConfirmed: boolean;
+  onRefresh: () => void;
+  onRunNext: () => void;
+}) {
+  const nextStep = workflowPlan?.next_step ?? null;
+  const requiresApproval = nextStep?.requires_approval === true;
+  const approvalMissing = requiresApproval && !approvalConfirmed;
+
+  return (
+    <SectionCard
+      title="Workflow Plan"
+      icon={<Zap className="h-4 w-4" />}
+      action={
+        <button
+          onClick={onRefresh}
+          disabled={isLoading}
+          className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+        >
+          {isLoading ? "Planning" : "Refresh"}
+        </button>
+      }
+    >
+      {!workflowPlan ? (
+        <EmptyState text="No workflow plan yet. Click Plan Full Pipeline." />
+      ) : (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-100">
+                  {workflowPlan.workflow?.title ?? "Deployment workflow"}
+                </p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  {workflowPlan.message}
+                </p>
+              </div>
+              <StatusPill value={workflowPlan.status} compact />
+            </div>
+
+            <div className="mt-3">
+              <div className="mb-1 flex items-center justify-between text-xs text-slate-500">
+                <span>Progress</span>
+                <span>{workflowPlan.summary.progress_percent}%</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                <div
+                  className="h-full rounded-full bg-blue-400"
+                  style={{
+                    width: `${Math.min(
+                      Math.max(workflowPlan.summary.progress_percent, 0),
+                      100,
+                    )}%`,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-4 gap-2 text-center text-xs">
+              <MiniStat
+                label="Done"
+                value={String(workflowPlan.summary.completed)}
+              />
+              <MiniStat
+                label="Required"
+                value={String(workflowPlan.summary.required)}
+              />
+              <MiniStat
+                label="Blocked"
+                value={String(workflowPlan.summary.blocked)}
+              />
+              <MiniStat
+                label="Optional"
+                value={String(workflowPlan.summary.optional)}
+              />
+            </div>
+          </div>
+
+          {nextStep && (
+            <div className="rounded-2xl border border-blue-400/30 bg-blue-500/10 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-blue-100">
+                    Next: {nextStep.title}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-blue-100/70">
+                    {nextStep.reason}
+                  </p>
+                </div>
+                <StatusPill
+                  value={requiresApproval ? "Approval" : "Safe"}
+                  compact
+                />
+              </div>
+
+              {approvalMissing && (
+                <p className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-100">
+                  This next step needs human approval. Tick the approval checkbox first.
+                </p>
+              )}
+
+              {nextStep.user_message && (
+                <button
+                  onClick={onRunNext}
+                  disabled={isLoading || approvalMissing}
+                  className="mt-3 w-full rounded-xl bg-blue-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Run Next Recommended Step
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {workflowPlan.steps.map((step) => (
+              <WorkflowStepCard key={step.id} step={step} />
+            ))}
+          </div>
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+function WorkflowStepCard({ step }: { step: WorkflowStep }) {
+  return (
+    <details className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
+      <summary className="cursor-pointer list-none">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-slate-100">
+              {step.title}
+            </p>
+            <p className="mt-1 truncate text-xs text-slate-500">
+              {step.category} · depends on{" "}
+              {step.depends_on.length > 0 ? step.depends_on.join(", ") : "nothing"}
+            </p>
+          </div>
+          <StatusPill value={step.status} compact />
+        </div>
+      </summary>
+
+      <div className="mt-3 space-y-2 text-xs leading-5 text-slate-400">
+        <p>{step.description}</p>
+        <p className="text-slate-500">{step.reason}</p>
+
+        {step.requires_approval && (
+          <StatusPill value="Requires approval" compact />
+        )}
+
+        {step.evidence.length > 0 && (
+          <div className="rounded-xl bg-slate-950 p-2">
+            <p className="mb-1 text-slate-500">Evidence</p>
+            <ul className="list-inside list-disc space-y-1">
+              {step.evidence.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -1165,7 +1472,8 @@ function StatusPill({
       : normalized.includes("warning") ||
           normalized.includes("unknown") ||
           normalized.includes("waiting") ||
-          normalized.includes("not available")
+          normalized.includes("not available") ||
+          normalized.includes("blocked")
         ? "warn"
         : normalized.includes("healthy") ||
             normalized.includes("success") ||
@@ -1174,7 +1482,8 @@ function StatusPill({
             normalized.includes("synced") ||
             normalized.includes("ready") ||
             normalized.includes("loaded") ||
-            normalized.includes("tracked")
+            normalized.includes("tracked") ||
+            normalized.includes("completed")
           ? "good"
           : "neutral";
 
@@ -1225,6 +1534,23 @@ function JsonPreview({ value }: { value: unknown }) {
       </pre>
     </details>
   );
+}
+
+function formatWorkflowPlanMessage(plan: WorkflowPlanResponse): string {
+  const nextStep = plan.next_step
+    ? `\n\nNext step: ${plan.next_step.title}\nReason: ${plan.next_step.reason}`
+    : "";
+
+  return `Workflow plan loaded.
+
+Status: ${plan.status}
+Progress: ${plan.summary.progress_percent}%
+Completed: ${plan.summary.completed}/${plan.summary.total_steps}
+Required: ${plan.summary.required}
+Blocked: ${plan.summary.blocked}
+Optional: ${plan.summary.optional}
+
+${plan.message}${nextStep}`;
 }
 
 function findLatestPullRequestUrl(artifacts: ProjectArtifact[]): string | null {

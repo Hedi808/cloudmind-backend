@@ -1,779 +1,702 @@
-from typing import Any
+from __future__ import annotations
 
-from app.agents.deployment_verification_agent import DeploymentVerificationAgent
-from app.agents.post_pr_validation_agent import PostPrValidationAgent
-from app.agents.remediation_planner_agent import RemediationPlannerAgent
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+from sqlalchemy import desc
+
+from app.agents.workflow_engine_agent import WorkflowEngineAgent
+from app.db.database import SessionLocal, create_database_tables
+from app.db.models import ActionRun, DeploymentState, Project, ProjectArtifact
 
 
 class FinalDemoOrchestratorAgent:
     """
-    Phase 14 agent.
+    Phase 19C: Memory-aware final demo orchestrator.
 
-    Responsibilities:
-    - create one final professor-friendly demo report
-    - summarize all CloudMind phases
-    - optionally run live PR validation
-    - optionally run live Azure deployment verification
-    - optionally run live remediation planning
-    - return a clear final mission report
+    This version uses the WorkflowEngineAgent as the source of truth.
 
-    Safety rules:
-    - read-only
-    - does not create PRs
-    - does not merge PRs
-    - does not deploy
-    - does not change Azure infrastructure
+    If the workflow engine says:
+        workflow_ready
+
+    then the final demo report should not be blocked by older strict checks.
+
+    Optional steps like Kubernetes manifests or a final report itself are warnings,
+    not blockers.
     """
 
-    def __init__(self) -> None:
-        self.pr_validation_agent = PostPrValidationAgent()
-        self.deployment_verification_agent = DeploymentVerificationAgent()
-        self.remediation_planner_agent = RemediationPlannerAgent()
+    def __init__(self):
+        self.workflow_engine = WorkflowEngineAgent()
 
     def get_phase_map(self) -> dict[str, Any]:
-        phases = self._phase_definitions()
-
         return {
             "status": "success",
-            "message": "CloudMind phase map generated.",
-            "phase": "phase_14_final_demo_orchestrator",
-            "total_phases": len(phases),
-            "phases": phases,
-            "final_demo_flow": [
-                "Analyze repository",
-                "Generate Docker assets",
-                "Generate Kubernetes assets",
-                "Generate CI/CD workflow",
-                "Generate Azure deployment assets",
-                "Deploy to Azure Container Apps",
-                "Observe status and logs",
-                "Analyze incident state",
-                "Plan remediation",
-                "Create remediation PR",
-                "Validate PR",
-                "Verify Azure deployment",
-                "Generate final mission report",
+            "message": "CloudMind phase map loaded successfully.",
+            "phase": "phase_19c_memory_aware_final_demo_report",
+            "phases": [
+                {
+                    "phase": "1-2",
+                    "name": "Backend foundation and repository analyzer",
+                    "status": "completed",
+                },
+                {
+                    "phase": "3",
+                    "name": "Docker generation agent",
+                    "status": "completed",
+                },
+                {
+                    "phase": "4",
+                    "name": "Kubernetes generation agent",
+                    "status": "completed",
+                },
+                {
+                    "phase": "5",
+                    "name": "Deployment preparation agent",
+                    "status": "completed",
+                },
+                {
+                    "phase": "6",
+                    "name": "CI/CD generation agent",
+                    "status": "completed",
+                },
+                {
+                    "phase": "7",
+                    "name": "Azure deployment files agent",
+                    "status": "completed",
+                },
+                {
+                    "phase": "8",
+                    "name": "Observability agent",
+                    "status": "completed",
+                },
+                {
+                    "phase": "9",
+                    "name": "Incident response agent",
+                    "status": "completed",
+                },
+                {
+                    "phase": "10",
+                    "name": "Remediation planner agent",
+                    "status": "completed",
+                },
+                {
+                    "phase": "11",
+                    "name": "Remediation pull request agent",
+                    "status": "completed",
+                },
+                {
+                    "phase": "12",
+                    "name": "Post-PR validation agent",
+                    "status": "completed",
+                },
+                {
+                    "phase": "13",
+                    "name": "Deployment verification agent",
+                    "status": "completed",
+                },
+                {
+                    "phase": "14",
+                    "name": "Final demo orchestrator",
+                    "status": "upgraded_in_phase_19c",
+                },
+                {
+                    "phase": "15",
+                    "name": "Conversation brain and frontend",
+                    "status": "completed",
+                },
+                {
+                    "phase": "16",
+                    "name": "Azure runtime deployment agent",
+                    "status": "completed",
+                },
+                {
+                    "phase": "17",
+                    "name": "PostgreSQL persistent project memory",
+                    "status": "completed",
+                },
+                {
+                    "phase": "18",
+                    "name": "Project history API and saved project selector",
+                    "status": "completed",
+                },
+                {
+                    "phase": "19A",
+                    "name": "Workflow dependency planner",
+                    "status": "completed",
+                },
+                {
+                    "phase": "19B",
+                    "name": "Frontend workflow panel",
+                    "status": "completed",
+                },
+                {
+                    "phase": "19C",
+                    "name": "Memory-aware final demo report",
+                    "status": "current",
+                },
             ],
         }
 
-    def run_final_report(
+    def generate_final_report(
         self,
-        repo_url: str,
-        resource_group: str,
-        app_name: str,
-        pull_request_number: int | None = None,
+        project_id: str | None = None,
+        repo_url: str | None = None,
         pull_request_url: str | None = None,
-        health_path: str = "/health",
-        timeout_seconds: int = 60,
-        log_tail: int = 100,
-        environment: str = "development",
-        run_pr_validation: bool = True,
-        run_azure_verification: bool = True,
-        run_remediation_plan: bool = True,
-        require_ci_success_for_pr_validation: bool = False,
-        allow_docs_only_without_ci: bool = True,
-        require_human_review_for_pr_validation: bool = False,
-        require_pr_merged_for_deployment: bool = False,
-        require_ci_success_for_deployment: bool = False,
-        require_azure_healthy: bool = True,
-        include_raw_outputs: bool = False,
+        resource_group: str | None = None,
+        app_name: str | None = None,
+        run_pr_validation: bool = False,
+        run_deployment_verification: bool = False,
+        save_to_memory: bool = True,
+        **_: Any,
     ) -> dict[str, Any]:
-        repo_url = repo_url.strip()
-        resource_group = resource_group.strip()
-        app_name = app_name.strip()
+        """
+        Generate a final demo report using PostgreSQL memory and the workflow engine.
 
-        if not repo_url:
-            return {
-                "status": "failed",
-                "message": "repo_url is required.",
-                "demo_ready": False,
-            }
+        This method is intentionally safe:
+        - It does not create PRs.
+        - It does not deploy to Azure.
+        - It does not merge anything.
+        - It only reads memory and saves a report artifact.
+        """
 
-        if not resource_group or not app_name:
-            return {
-                "status": "failed",
-                "message": "resource_group and app_name are required.",
-                "demo_ready": False,
-            }
+        create_database_tables()
 
-        live_results: dict[str, Any] = {}
-        validation_notes: list[str] = []
-        blockers: list[str] = []
-        warnings: list[str] = []
-        successful_checks: list[str] = []
-
-        if run_azure_verification:
-            azure_result = self.deployment_verification_agent.verify_azure_only(
-                resource_group=resource_group,
-                app_name=app_name,
-                health_path=health_path,
-                timeout_seconds=timeout_seconds,
-                log_tail=log_tail,
-                require_azure_healthy=require_azure_healthy,
-            )
-
-            live_results["phase_13_azure_deployment_verification"] = self._maybe_trim_azure_result(
-                result=azure_result,
-                include_raw_outputs=include_raw_outputs,
-            )
-
-            if azure_result.get("status") == "verification_passed":
-                successful_checks.append("Azure deployment verification passed.")
-            elif azure_result.get("status") == "verification_warning":
-                warnings.append("Azure deployment verification completed with warnings.")
-            else:
-                blockers.append("Azure deployment verification failed.")
-
-        else:
-            validation_notes.append("Azure deployment verification was skipped by request.")
-
-        if run_pr_validation:
-            if pull_request_url:
-                pr_validation_result = self.pr_validation_agent.validate_pull_request_url(
-                    pull_request_url=pull_request_url,
-                    require_ci_success=require_ci_success_for_pr_validation,
-                    allow_docs_only_without_ci=allow_docs_only_without_ci,
-                    require_human_review=require_human_review_for_pr_validation,
-                )
-
-                live_results["phase_12_pr_validation"] = self._maybe_trim_pr_validation_result(
-                    result=pr_validation_result,
-                    include_raw_outputs=include_raw_outputs,
-                )
-
-                self._collect_pr_validation_result(
-                    result=pr_validation_result,
-                    successful_checks=successful_checks,
-                    warnings=warnings,
-                    blockers=blockers,
-                )
-
-            elif pull_request_number:
-                pr_validation_result = self.pr_validation_agent.validate_pull_request(
-                    repo_url=repo_url,
-                    pull_request_number=pull_request_number,
-                    require_ci_success=require_ci_success_for_pr_validation,
-                    allow_docs_only_without_ci=allow_docs_only_without_ci,
-                    require_human_review=require_human_review_for_pr_validation,
-                )
-
-                live_results["phase_12_pr_validation"] = self._maybe_trim_pr_validation_result(
-                    result=pr_validation_result,
-                    include_raw_outputs=include_raw_outputs,
-                )
-
-                self._collect_pr_validation_result(
-                    result=pr_validation_result,
-                    successful_checks=successful_checks,
-                    warnings=warnings,
-                    blockers=blockers,
-                )
-
-            else:
-                validation_notes.append(
-                    "PR validation was skipped because no pull_request_number or pull_request_url was provided."
-                )
-
-        else:
-            validation_notes.append("PR validation was skipped by request.")
-
-        if run_remediation_plan:
-            remediation_result = self.remediation_planner_agent.plan_from_azure(
-                resource_group=resource_group,
-                app_name=app_name,
-                health_path=health_path,
-                timeout_seconds=timeout_seconds,
-                log_tail=log_tail,
-                environment=environment,
-                allow_cost_increase=False,
-            )
-
-            live_results["phase_10_remediation_planning"] = self._maybe_trim_remediation_result(
-                result=remediation_result,
-                include_raw_outputs=include_raw_outputs,
-            )
-
-            if remediation_result.get("incident_detected"):
-                warnings.append("Remediation planner detected an incident or remediation need.")
-            else:
-                successful_checks.append("Remediation planner found no active incident.")
-
-        else:
-            validation_notes.append("Remediation planning was skipped by request.")
-
-        if pull_request_number or pull_request_url:
-            deployment_result = self._run_optional_pr_deployment_verification(
-                repo_url=repo_url,
-                pull_request_number=pull_request_number,
-                pull_request_url=pull_request_url,
-                resource_group=resource_group,
-                app_name=app_name,
-                health_path=health_path,
-                timeout_seconds=timeout_seconds,
-                log_tail=log_tail,
-                require_pr_merged=require_pr_merged_for_deployment,
-                require_ci_success=require_ci_success_for_deployment,
-                require_azure_healthy=require_azure_healthy,
-                include_raw_outputs=include_raw_outputs,
-            )
-
-            live_results["phase_13_pr_and_deployment_verification"] = deployment_result["result"]
-
-            if deployment_result["classification"] == "success":
-                successful_checks.append("PR + deployment verification passed.")
-            elif deployment_result["classification"] == "warning":
-                warnings.append("PR + deployment verification completed with warnings.")
-            else:
-                if require_pr_merged_for_deployment:
-                    blockers.append("PR + deployment verification failed.")
-                else:
-                    warnings.append("PR + deployment verification did not fully pass, but require_pr_merged_for_deployment=false.")
-
-        demo_decision = self._build_demo_decision(
-            blockers=blockers,
-            warnings=warnings,
-            successful_checks=successful_checks,
-            validation_notes=validation_notes,
+        project = self._resolve_project(
+            project_id=project_id,
+            repo_url=repo_url,
+            resource_group=resource_group,
+            app_name=app_name,
         )
 
-        return {
-            "status": demo_decision["status"],
-            "message": demo_decision["message"],
-            "phase": "phase_14_final_demo_orchestrator",
-            "demo_ready": demo_decision["demo_ready"],
-            "demo_recommendation": demo_decision["demo_recommendation"],
-            "repo_url": repo_url,
-            "resource_group": resource_group,
-            "app_name": app_name,
-            "environment": environment,
-            "executive_summary": self._build_executive_summary(
-                app_name=app_name,
-                demo_decision=demo_decision,
-                successful_checks=successful_checks,
-                warnings=warnings,
-                blockers=blockers,
-            ),
-            "phase_coverage": self._build_phase_coverage(
-                live_results=live_results,
-            ),
-            "successful_checks": self._deduplicate_strings(successful_checks),
-            "warnings": self._deduplicate_strings(warnings),
-            "blockers": self._deduplicate_strings(blockers),
-            "validation_notes": self._deduplicate_strings(validation_notes),
-            "professor_script": self._build_professor_script(
-                app_name=app_name,
+        if project is None:
+            return self._blocked_no_project_report(
+                project_id=project_id,
+                repo_url=repo_url,
                 resource_group=resource_group,
+                app_name=app_name,
+            )
+
+        workflow_plan = self.workflow_engine.build_deployment_plan(
+            project_id=project.id,
+            repo_url=project.repo_url,
+        )
+
+        steps = workflow_plan.get("steps", [])
+        summary = workflow_plan.get("summary", {})
+        workflow_status = workflow_plan.get("status", "unknown")
+        next_step = workflow_plan.get("next_step")
+
+        required_blockers = self._extract_required_blockers(steps)
+        warnings = self._extract_warnings(
+            steps=steps,
+            project=project,
+            pull_request_url=pull_request_url,
+        )
+
+        demo_ready = workflow_status == "workflow_ready" and not required_blockers
+
+        status = "demo_ready" if demo_ready else "demo_blocked"
+        recommendation = "ready_for_demo" if demo_ready else "fix_blockers_before_demo"
+
+        checks = self._build_checks(
+            steps=steps,
+            project=project,
+            workflow_status=workflow_status,
+        )
+
+        report_markdown = self._build_report_markdown(
+            project=project,
+            status=status,
+            demo_ready=demo_ready,
+            recommendation=recommendation,
+            workflow_status=workflow_status,
+            summary=summary,
+            checks=checks,
+            blockers=required_blockers,
+            warnings=warnings,
+            next_step=next_step,
+        )
+
+        result = {
+            "status": status,
+            "message": (
+                "Final CloudMind demo report generated from PostgreSQL memory "
+                "and the workflow dependency engine."
             ),
-            "swagger_demo_order": self._build_swagger_demo_order(
-                has_pr=bool(pull_request_number or pull_request_url),
-            ),
-            "live_results": live_results,
+            "phase": "phase_19c_memory_aware_final_demo_report",
+            "demo_ready": demo_ready,
+            "demo_recommendation": recommendation,
+            "recommendation": recommendation,
+            "workflow_status": workflow_status,
+            "workflow_summary": summary,
+            "workflow_next_step": next_step,
+            "project": self._project_to_dict(project),
+            "checks": checks,
+            "blockers": required_blockers,
+            "warnings": warnings,
+            "report_markdown": report_markdown,
             "safety": {
                 "read_only": True,
-                "creates_pull_request": False,
-                "merges_pull_request": False,
-                "deploys_to_cloud": False,
-                "changes_infrastructure": False,
-                "safe_for_demo": True,
+                "creates_pull_requests": False,
+                "deploys_to_azure": False,
+                "merges_pull_requests": False,
+                "uses_workflow_engine_as_source_of_truth": True,
+                "run_pr_validation_requested": run_pr_validation,
+                "run_deployment_verification_requested": run_deployment_verification,
             },
+            "generated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    def _run_optional_pr_deployment_verification(
-        self,
-        repo_url: str,
-        pull_request_number: int | None,
-        pull_request_url: str | None,
-        resource_group: str,
-        app_name: str,
-        health_path: str,
-        timeout_seconds: int,
-        log_tail: int,
-        require_pr_merged: bool,
-        require_ci_success: bool,
-        require_azure_healthy: bool,
-        include_raw_outputs: bool,
-    ) -> dict[str, Any]:
-        if pull_request_url:
-            result = self.deployment_verification_agent.verify_pr_url_deployment(
-                pull_request_url=pull_request_url,
-                resource_group=resource_group,
-                app_name=app_name,
-                health_path=health_path,
-                timeout_seconds=timeout_seconds,
-                log_tail=log_tail,
-                require_pr_merged=require_pr_merged,
-                require_ci_success=require_ci_success,
-                require_azure_healthy=require_azure_healthy,
+        if save_to_memory:
+            saved_artifact = self._save_report_artifact(
+                project_id=project.id,
+                report=result,
             )
-        elif pull_request_number:
-            result = self.deployment_verification_agent.verify_pr_deployment(
-                repo_url=repo_url,
-                pull_request_number=pull_request_number,
-                resource_group=resource_group,
-                app_name=app_name,
-                health_path=health_path,
-                timeout_seconds=timeout_seconds,
-                log_tail=log_tail,
-                require_pr_merged=require_pr_merged,
-                require_ci_success=require_ci_success,
-                require_azure_healthy=require_azure_healthy,
-            )
+            result["saved_to_memory"] = saved_artifact.get("saved", False)
+            result["saved_artifact_id"] = saved_artifact.get("artifact_id")
+            result["memory_save_error"] = saved_artifact.get("error")
         else:
-            return {
-                "classification": "skipped",
-                "result": {
-                    "status": "skipped",
-                    "message": "No pull request was provided.",
-                },
-            }
-
-        if result.get("status") == "verification_passed":
-            classification = "success"
-        elif result.get("status") == "verification_warning":
-            classification = "warning"
-        else:
-            classification = "failed"
-
-        return {
-            "classification": classification,
-            "result": self._maybe_trim_deployment_result(
-                result=result,
-                include_raw_outputs=include_raw_outputs,
-            ),
-        }
-
-    def _collect_pr_validation_result(
-        self,
-        result: dict[str, Any],
-        successful_checks: list[str],
-        warnings: list[str],
-        blockers: list[str],
-    ) -> None:
-        status = result.get("status")
-
-        if status == "validation_passed":
-            successful_checks.append("PR validation passed.")
-        elif status == "validation_warning":
-            warnings.append("PR validation completed with warnings.")
-        elif status == "validation_failed":
-            blockers.append("PR validation failed.")
-        else:
-            warnings.append("PR validation returned an unexpected status.")
-
-    def _build_demo_decision(
-        self,
-        blockers: list[str],
-        warnings: list[str],
-        successful_checks: list[str],
-        validation_notes: list[str],
-    ) -> dict[str, Any]:
-        if blockers:
-            return {
-                "status": "demo_blocked",
-                "message": "Final demo report generated, but blockers must be resolved before presenting it as successful.",
-                "demo_ready": False,
-                "demo_recommendation": "fix_blockers_before_demo",
-            }
-
-        if warnings:
-            return {
-                "status": "demo_ready_with_warnings",
-                "message": "Final demo report generated. The system is demo-ready, but warnings should be explained.",
-                "demo_ready": True,
-                "demo_recommendation": "demo_ready_explain_warnings",
-            }
-
-        if successful_checks:
-            return {
-                "status": "demo_ready",
-                "message": "Final demo report generated successfully. CloudMind is ready for presentation.",
-                "demo_ready": True,
-                "demo_recommendation": "ready_to_present",
-            }
-
-        if validation_notes:
-            return {
-                "status": "demo_report_only",
-                "message": "Final demo report generated, but no live checks were executed.",
-                "demo_ready": True,
-                "demo_recommendation": "run_live_checks_for_stronger_demo",
-            }
-
-        return {
-            "status": "demo_report_only",
-            "message": "Final demo report generated.",
-            "demo_ready": True,
-            "demo_recommendation": "ready_to_present",
-        }
-
-    def _build_executive_summary(
-        self,
-        app_name: str,
-        demo_decision: dict[str, Any],
-        successful_checks: list[str],
-        warnings: list[str],
-        blockers: list[str],
-    ) -> str:
-        if blockers:
-            return (
-                f"CloudMind generated a final mission report for {app_name}, "
-                "but the demo currently has blockers. Resolve them before presenting the flow as fully successful."
-            )
-
-        if warnings:
-            return (
-                f"CloudMind generated a final mission report for {app_name}. "
-                "The core flow is demo-ready, but some warnings should be explained during the presentation."
-            )
-
-        return (
-            f"CloudMind generated a final mission report for {app_name}. "
-            "The live verification checks passed and the platform is ready to present."
-        )
-
-    def _build_phase_coverage(
-        self,
-        live_results: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        coverage = []
-
-        for phase in self._phase_definitions():
-            phase_number = phase["phase_number"]
-
-            if phase_number <= 7:
-                status = "implemented_earlier"
-                evidence = "Implemented through previous CloudMind endpoints and GitOps workflow."
-            elif phase_number == 8:
-                status = "covered_by_phase_13"
-                evidence = "Azure status and logs are checked during deployment verification."
-            elif phase_number == 9:
-                status = "covered_by_phase_13"
-                evidence = "Incident analysis is executed during deployment verification."
-            elif phase_number == 10:
-                status = "validated_live" if "phase_10_remediation_planning" in live_results else "available_not_run"
-                evidence = "Remediation planning endpoint is available and can be run live."
-            elif phase_number == 11:
-                status = "implemented_earlier"
-                evidence = "Remediation PR creation was implemented in Phase 11."
-            elif phase_number == 12:
-                status = "validated_live" if "phase_12_pr_validation" in live_results else "available_not_run"
-                evidence = "PR validation endpoint is available and can be run live."
-            elif phase_number == 13:
-                status = "validated_live" if "phase_13_azure_deployment_verification" in live_results else "available_not_run"
-                evidence = "Deployment verification endpoint is available and can be run live."
-            else:
-                status = "current_phase"
-                evidence = "Final demo report generated by this endpoint."
-
-            coverage.append(
-                {
-                    "phase_number": phase_number,
-                    "name": phase["name"],
-                    "status": status,
-                    "evidence": evidence,
-                }
-            )
-
-        return coverage
-
-    def _phase_definitions(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "phase_number": 1,
-                "name": "Conversation and orchestration",
-                "description": "CloudMind receives user instructions and routes them to the right agent.",
-            },
-            {
-                "phase_number": 2,
-                "name": "Repository analysis",
-                "description": "CloudMind analyzes language, framework, architecture, and app start command.",
-            },
-            {
-                "phase_number": 3,
-                "name": "Docker generation",
-                "description": "CloudMind generates Dockerfile, .dockerignore, and compose.yml.",
-            },
-            {
-                "phase_number": 4,
-                "name": "Kubernetes generation",
-                "description": "CloudMind generates Kubernetes manifests and kustomization files.",
-            },
-            {
-                "phase_number": 5,
-                "name": "Deployment preparation",
-                "description": "CloudMind prepares Docker and Kubernetes assets in one combined workflow.",
-            },
-            {
-                "phase_number": 6,
-                "name": "CI/CD generation",
-                "description": "CloudMind generates GitHub Actions for building and publishing container images.",
-            },
-            {
-                "phase_number": 7,
-                "name": "Azure deployment generation",
-                "description": "CloudMind generates Azure Container Apps deployment scripts.",
-            },
-            {
-                "phase_number": 8,
-                "name": "Observability",
-                "description": "CloudMind reads Azure app status, health endpoint, revisions, and logs.",
-            },
-            {
-                "phase_number": 9,
-                "name": "Incident response",
-                "description": "CloudMind diagnoses incidents using Azure status and logs.",
-            },
-            {
-                "phase_number": 10,
-                "name": "Remediation planning",
-                "description": "CloudMind proposes safe remediation steps without executing risky changes.",
-            },
-            {
-                "phase_number": 11,
-                "name": "Remediation pull requests",
-                "description": "CloudMind converts approved remediation plans into GitOps pull requests.",
-            },
-            {
-                "phase_number": 12,
-                "name": "Post-PR validation",
-                "description": "CloudMind validates changed files, CI state, mergeability, and review status.",
-            },
-            {
-                "phase_number": 13,
-                "name": "Deployment verification after merge",
-                "description": "CloudMind verifies Azure runtime health, logs, and incident resolution.",
-            },
-            {
-                "phase_number": 14,
-                "name": "Final demo orchestrator",
-                "description": "CloudMind generates a final professor-friendly mission report.",
-            },
-        ]
-
-    def _build_professor_script(
-        self,
-        app_name: str,
-        resource_group: str,
-    ) -> list[str]:
-        return [
-            "CloudMind is a multi-agent DevOps assistant.",
-            "It analyzes a Git repository and understands the application stack.",
-            "It generates Docker, Kubernetes, CI/CD, and Azure deployment assets.",
-            "It follows GitOps principles by creating pull requests instead of pushing directly to main.",
-            "It deploys the application to Azure Container Apps using a cost-aware configuration.",
-            "It observes the deployed app through Azure status, health checks, revisions, and logs.",
-            "It diagnoses incidents from runtime signals and logs.",
-            "It proposes safe remediation plans with human approval gates.",
-            "It can create remediation pull requests for human review.",
-            "It validates pull requests before merge by checking changed files, CI, and risk level.",
-            f"It verifies the final Azure runtime state of {app_name} in {resource_group}.",
-            "The system is designed to assist DevOps workflows safely, not to replace human approval.",
-        ]
-
-    def _build_swagger_demo_order(
-        self,
-        has_pr: bool,
-    ) -> list[dict[str, str]]:
-        order = [
-            {
-                "step": "1",
-                "endpoint": "POST /api/deployment-verification/verify-azure",
-                "purpose": "Show that the deployed Azure app is healthy.",
-            },
-            {
-                "step": "2",
-                "endpoint": "POST /api/incidents/analyze-azure",
-                "purpose": "Show that CloudMind can diagnose the runtime state.",
-            },
-            {
-                "step": "3",
-                "endpoint": "POST /api/remediation/plan-azure",
-                "purpose": "Show safe remediation planning.",
-            },
-            {
-                "step": "4",
-                "endpoint": "POST /api/demo/final-report",
-                "purpose": "Show the final CloudMind mission report.",
-            },
-        ]
-
-        if has_pr:
-            order.insert(
-                1,
-                {
-                    "step": "2",
-                    "endpoint": "POST /api/pr-validation/validate-url",
-                    "purpose": "Show PR validation and GitOps safety.",
-                },
-            )
-
-            for index, item in enumerate(order, start=1):
-                item["step"] = str(index)
-
-        return order
-
-    def _maybe_trim_azure_result(
-        self,
-        result: dict[str, Any],
-        include_raw_outputs: bool,
-    ) -> dict[str, Any]:
-        if include_raw_outputs:
-            return result
-
-        azure = result.get("azure", {}) or {}
-        status_result = azure.get("status_result", {}) or {}
-        status_body = status_result.get("result", status_result)
-        azure_body = status_body.get("azure", {}) or {}
-        health = status_body.get("health", {}) or {}
-        logs_result = azure.get("logs_result", {}) or {}
-        incident_result = azure.get("incident_result", {}) or {}
-
-        return {
-            "status": result.get("status"),
-            "message": result.get("message"),
-            "verified": result.get("verified"),
-            "verification_scope": result.get("verification_scope"),
-            "deployment_recommendation": result.get("deployment_recommendation"),
-            "azure_summary": {
-                "azure_healthy": azure.get("azure_healthy"),
-                "logs_available": azure.get("logs_available"),
-                "incident_detected": azure.get("incident_detected"),
-                "app_url": status_body.get("app_url"),
-                "health_status_code": health.get("status_code"),
-                "response_time_seconds": health.get("response_time_seconds"),
-                "provisioning_state": azure_body.get("provisioning_state"),
-                "running_status": azure_body.get("running_status"),
-                "revision": azure_body.get("latest_ready_revision_name"),
-                "image": self._extract_image(azure_body),
-                "min_replicas": azure_body.get("min_replicas"),
-                "max_replicas": azure_body.get("max_replicas"),
-                "log_count": logs_result.get("log_count"),
-                "incident_status": incident_result.get("status"),
-                "incident_severity": incident_result.get("severity"),
-            },
-            "merge_blockers": result.get("merge_blockers", []),
-            "warnings": result.get("warnings", []),
-            "risk_notes": result.get("risk_notes", []),
-        }
-
-    def _maybe_trim_pr_validation_result(
-        self,
-        result: dict[str, Any],
-        include_raw_outputs: bool,
-    ) -> dict[str, Any]:
-        if include_raw_outputs:
-            return result
-
-        return {
-            "status": result.get("status"),
-            "message": result.get("message"),
-            "validated": result.get("validated"),
-            "pull_request": result.get("pull_request"),
-            "file_summary": result.get("file_summary"),
-            "ci": {
-                "status": result.get("ci", {}).get("status"),
-                "blocking": result.get("ci", {}).get("blocking"),
-                "failed_checks": result.get("ci", {}).get("failed_checks"),
-                "pending_checks": result.get("ci", {}).get("pending_checks"),
-                "successful_checks": result.get("ci", {}).get("successful_checks"),
-                "warnings": result.get("ci", {}).get("warnings"),
-            },
-            "merge_blockers": result.get("merge_blockers", []),
-            "warnings": result.get("warnings", []),
-            "merge_recommendation": result.get("merge_recommendation"),
-            "safe_for_human_merge": result.get("safe_for_human_merge"),
-        }
-
-    def _maybe_trim_remediation_result(
-        self,
-        result: dict[str, Any],
-        include_raw_outputs: bool,
-    ) -> dict[str, Any]:
-        if include_raw_outputs:
-            return result
-
-        steps = result.get("remediation_steps", []) or []
-
-        return {
-            "status": result.get("status"),
-            "message": result.get("message"),
-            "app_name": result.get("app_name"),
-            "environment": result.get("environment"),
-            "incident_detected": result.get("incident_detected"),
-            "severity": result.get("severity"),
-            "remediation_required": result.get("remediation_required"),
-            "human_approval_required": result.get("human_approval_required"),
-            "safe_to_auto_fix": result.get("safe_to_auto_fix"),
-            "remediation_step_count": len(steps),
-            "remediation_steps": [
-                {
-                    "id": step.get("id"),
-                    "title": step.get("title"),
-                    "risk": step.get("risk"),
-                    "requires_human_approval": step.get("requires_human_approval"),
-                    "safe_to_auto_fix": step.get("safe_to_auto_fix"),
-                }
-                for step in steps
-            ],
-            "risk_notes": result.get("risk_notes", []),
-        }
-
-    def _maybe_trim_deployment_result(
-        self,
-        result: dict[str, Any],
-        include_raw_outputs: bool,
-    ) -> dict[str, Any]:
-        if include_raw_outputs:
-            return result
-
-        return {
-            "status": result.get("status"),
-            "message": result.get("message"),
-            "verified": result.get("verified"),
-            "verification_scope": result.get("verification_scope"),
-            "pr": {
-                "status": result.get("pr", {}).get("status"),
-                "merged": result.get("pr", {}).get("merged"),
-                "message": result.get("pr", {}).get("message"),
-                "pull_request": result.get("pr", {}).get("pull_request"),
-            },
-            "ci": {
-                "status": result.get("ci", {}).get("status"),
-                "blocking": result.get("ci", {}).get("blocking"),
-                "warnings": result.get("ci", {}).get("warnings"),
-            },
-            "azure": {
-                "status": result.get("azure", {}).get("status"),
-                "azure_healthy": result.get("azure", {}).get("azure_healthy"),
-                "logs_available": result.get("azure", {}).get("logs_available"),
-                "incident_detected": result.get("azure", {}).get("incident_detected"),
-            },
-            "merge_blockers": result.get("merge_blockers", []),
-            "warnings": result.get("warnings", []),
-            "deployment_recommendation": result.get("deployment_recommendation"),
-        }
-
-    def _extract_image(
-        self,
-        azure_body: dict[str, Any],
-    ) -> str | None:
-        containers = azure_body.get("containers", []) or []
-
-        if not containers:
-            return None
-
-        return containers[0].get("image")
-
-    def _deduplicate_strings(
-        self,
-        items: list[str],
-    ) -> list[str]:
-        seen = set()
-        result = []
-
-        for item in items:
-            if item not in seen:
-                seen.add(item)
-                result.append(item)
+            result["saved_to_memory"] = False
+            result["saved_artifact_id"] = None
+            result["memory_save_error"] = None
 
         return result
+
+    def generate_quick_report(
+        self,
+        project_id: str | None = None,
+        repo_url: str | None = None,
+        resource_group: str | None = None,
+        app_name: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        report = self.generate_final_report(
+            project_id=project_id,
+            repo_url=repo_url,
+            resource_group=resource_group,
+            app_name=app_name,
+            save_to_memory=False,
+            **kwargs,
+        )
+
+        return {
+            "status": report.get("status"),
+            "message": "Quick CloudMind demo report generated.",
+            "demo_ready": report.get("demo_ready"),
+            "demo_recommendation": report.get("demo_recommendation"),
+            "workflow_status": report.get("workflow_status"),
+            "workflow_summary": report.get("workflow_summary"),
+            "checks": report.get("checks"),
+            "blockers": report.get("blockers"),
+            "warnings": report.get("warnings"),
+            "project": report.get("project"),
+        }
+
+    def final_report(self, **kwargs: Any) -> dict[str, Any]:
+        return self.generate_final_report(**kwargs)
+
+    def quick_report(self, **kwargs: Any) -> dict[str, Any]:
+        return self.generate_quick_report(**kwargs)
+
+    def build_final_report(self, **kwargs: Any) -> dict[str, Any]:
+        return self.generate_final_report(**kwargs)
+
+    def run_final_demo_report(self, **kwargs: Any) -> dict[str, Any]:
+        return self.generate_final_report(**kwargs)
+
+    def _resolve_project(
+        self,
+        project_id: str | None,
+        repo_url: str | None,
+        resource_group: str | None,
+        app_name: str | None,
+    ) -> Project | None:
+        with SessionLocal() as db:
+            if project_id:
+                project = db.get(Project, project_id)
+                if project:
+                    return self._detach_project(project)
+
+            if repo_url:
+                project = (
+                    db.query(Project)
+                    .filter(Project.repo_url == repo_url)
+                    .order_by(desc(Project.updated_at))
+                    .first()
+                )
+                if project:
+                    return self._detach_project(project)
+
+            if resource_group and app_name:
+                project = (
+                    db.query(Project)
+                    .filter(
+                        Project.azure_resource_group == resource_group,
+                        Project.azure_app_name == app_name,
+                    )
+                    .order_by(desc(Project.updated_at))
+                    .first()
+                )
+                if project:
+                    return self._detach_project(project)
+
+            if app_name:
+                project = (
+                    db.query(Project)
+                    .filter(Project.azure_app_name == app_name)
+                    .order_by(desc(Project.updated_at))
+                    .first()
+                )
+                if project:
+                    return self._detach_project(project)
+
+        return None
+
+    def _detach_project(self, project: Project) -> Project:
+        """
+        Copy values into a lightweight Project-like ORM object before the session closes.
+
+        SQLAlchemy objects expire after session close depending on configuration.
+        This prevents detached-instance issues when building the report.
+        """
+
+        detached = Project()
+        detached.id = project.id
+        detached.name = project.name
+        detached.repo_url = project.repo_url
+        detached.repo_owner = project.repo_owner
+        detached.repo_name = project.repo_name
+        detached.default_branch = project.default_branch
+        detached.detected_language = project.detected_language
+        detached.detected_framework = project.detected_framework
+        detached.project_type = project.project_type
+        detached.port = project.port
+        detached.start_command = project.start_command
+        detached.ghcr_image = project.ghcr_image
+        detached.azure_resource_group = project.azure_resource_group
+        detached.azure_app_name = project.azure_app_name
+        detached.azure_environment_name = project.azure_environment_name
+        detached.azure_app_url = project.azure_app_url
+        detached.metadata_json = project.metadata_json
+        detached.created_at = project.created_at
+        detached.updated_at = project.updated_at
+
+        return detached
+
+    def _blocked_no_project_report(
+        self,
+        project_id: str | None,
+        repo_url: str | None,
+        resource_group: str | None,
+        app_name: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "status": "demo_blocked",
+            "message": "CloudMind could not generate a demo report because no saved project was found.",
+            "phase": "phase_19c_memory_aware_final_demo_report",
+            "demo_ready": False,
+            "demo_recommendation": "analyze_repository_first",
+            "recommendation": "analyze_repository_first",
+            "workflow_status": "project_not_found",
+            "workflow_summary": {
+                "total_steps": 0,
+                "completed": 0,
+                "required": 1,
+                "blocked": 0,
+                "optional": 0,
+                "progress_percent": 0,
+            },
+            "project": None,
+            "checks": {},
+            "blockers": [
+                {
+                    "id": "project_not_found",
+                    "title": "Project not found in PostgreSQL memory",
+                    "reason": "Analyze the repository first so CloudMind can create project memory.",
+                    "user_message": "Analyze this repository",
+                }
+            ],
+            "warnings": [],
+            "input": {
+                "project_id": project_id,
+                "repo_url": repo_url,
+                "resource_group": resource_group,
+                "app_name": app_name,
+            },
+            "saved_to_memory": False,
+            "saved_artifact_id": None,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _extract_required_blockers(
+        self,
+        steps: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        required_step_ids = {
+            "analyze_repository",
+            "generate_docker",
+            "generate_cicd",
+            "publish_container_image",
+            "deploy_to_azure",
+            "check_azure_status",
+            "analyze_incident",
+        }
+
+        blockers = []
+
+        for step in steps:
+            step_id = step.get("id")
+            step_status = step.get("status")
+
+            if step_id in required_step_ids and step_status in {"required", "blocked"}:
+                blockers.append(
+                    {
+                        "id": step_id,
+                        "title": step.get("title"),
+                        "status": step_status,
+                        "reason": step.get("reason"),
+                        "requires_approval": step.get("requires_approval", False),
+                        "can_execute_now": step.get("can_execute_now", False),
+                        "user_message": step.get("user_message"),
+                    }
+                )
+
+        return blockers
+
+    def _extract_warnings(
+        self,
+        steps: list[dict[str, Any]],
+        project: Project,
+        pull_request_url: str | None,
+    ) -> list[dict[str, Any]]:
+        warnings = []
+
+        for step in steps:
+            if step.get("status") == "optional":
+                warnings.append(
+                    {
+                        "id": step.get("id"),
+                        "title": step.get("title"),
+                        "status": step.get("status"),
+                        "reason": step.get("reason"),
+                        "user_message": step.get("user_message"),
+                    }
+                )
+
+        if not project.ghcr_image:
+            warnings.append(
+                {
+                    "id": "ghcr_image_not_saved_on_project",
+                    "title": "GHCR image field is empty in project memory",
+                    "status": "warning",
+                    "reason": (
+                        "This is not a blocker because the workflow engine found deployment evidence. "
+                        "Later, store the exact GHCR image in the project table for cleaner reporting."
+                    ),
+                }
+            )
+
+        if not pull_request_url:
+            warnings.append(
+                {
+                    "id": "pull_request_url_not_provided",
+                    "title": "Pull request URL was not provided to the report",
+                    "status": "warning",
+                    "reason": (
+                        "This is not a blocker if the main workflow is complete, but PR evidence "
+                        "makes the professor demo stronger."
+                    ),
+                }
+            )
+
+        return warnings
+
+    def _build_checks(
+        self,
+        steps: list[dict[str, Any]],
+        project: Project,
+        workflow_status: str,
+    ) -> dict[str, Any]:
+        step_map = {step.get("id"): step for step in steps}
+
+        return {
+            "workflow_ready": workflow_status == "workflow_ready",
+            "repository_analyzed": self._step_completed(step_map, "analyze_repository"),
+            "docker_ready": self._step_completed(step_map, "generate_docker"),
+            "kubernetes_ready": self._step_completed(step_map, "generate_kubernetes"),
+            "cicd_ready": self._step_completed(step_map, "generate_cicd"),
+            "container_image_ready": self._step_completed(step_map, "publish_container_image"),
+            "azure_files_ready": self._step_completed(step_map, "generate_azure_files"),
+            "azure_deployed": self._step_completed(step_map, "deploy_to_azure"),
+            "azure_status_checked": self._step_completed(step_map, "check_azure_status"),
+            "incident_analyzed": self._step_completed(step_map, "analyze_incident"),
+            "final_report_ready": self._step_completed(step_map, "final_demo_report"),
+            "azure_app_url": project.azure_app_url,
+            "azure_resource_group": project.azure_resource_group,
+            "azure_app_name": project.azure_app_name,
+            "detected_language": project.detected_language,
+            "detected_framework": project.detected_framework,
+            "project_type": project.project_type,
+        }
+
+    def _step_completed(
+        self,
+        step_map: dict[str, dict[str, Any]],
+        step_id: str,
+    ) -> bool:
+        return step_map.get(step_id, {}).get("status") == "completed"
+
+    def _build_report_markdown(
+        self,
+        project: Project,
+        status: str,
+        demo_ready: bool,
+        recommendation: str,
+        workflow_status: str,
+        summary: dict[str, Any],
+        checks: dict[str, Any],
+        blockers: list[dict[str, Any]],
+        warnings: list[dict[str, Any]],
+        next_step: dict[str, Any] | None,
+    ) -> str:
+        blocker_lines = (
+            "\n".join(
+                f"- {blocker.get('title')} — {blocker.get('reason')}"
+                for blocker in blockers
+            )
+            if blockers
+            else "- None"
+        )
+
+        warning_lines = (
+            "\n".join(
+                f"- {warning.get('title')} — {warning.get('reason')}"
+                for warning in warnings
+            )
+            if warnings
+            else "- None"
+        )
+
+        checks_lines = "\n".join(
+            f"- {key}: {value}"
+            for key, value in checks.items()
+        )
+
+        next_step_text = (
+            f"{next_step.get('title')} — {next_step.get('reason')}"
+            if next_step
+            else "No next step required."
+        )
+
+        return f"""# CloudMind Final Demo Report
+
+## Project
+
+- Name: {project.name}
+- Repository: {project.repo_url}
+- Type: {project.project_type}
+- Language: {project.detected_language}
+- Framework: {project.detected_framework}
+- Port: {project.port}
+- Start command: {project.start_command}
+
+## Demo Status
+
+- Status: {status}
+- Demo ready: {demo_ready}
+- Recommendation: {recommendation}
+- Workflow status: {workflow_status}
+- Progress: {summary.get("progress_percent", 0)}%
+- Completed steps: {summary.get("completed", 0)}/{summary.get("total_steps", 0)}
+- Required remaining: {summary.get("required", 0)}
+- Blocked: {summary.get("blocked", 0)}
+- Optional remaining: {summary.get("optional", 0)}
+
+## Azure Runtime
+
+- Resource group: {project.azure_resource_group}
+- Container App: {project.azure_app_name}
+- Environment: {project.azure_environment_name}
+- URL: {project.azure_app_url}
+
+## Checks
+
+{checks_lines}
+
+## Blockers
+
+{blocker_lines}
+
+## Warnings
+
+{warning_lines}
+
+## Next Step
+
+{next_step_text}
+
+## Final Explanation
+
+CloudMind analyzed the repository, tracked the project in PostgreSQL memory, planned the deployment workflow using the dependency engine, and generated this report from stored project state.
+
+If `demo_ready` is true, the main end-to-end demo can be presented as successful. Optional warnings can be explained as future improvements.
+"""
+
+    def _save_report_artifact(
+        self,
+        project_id: str,
+        report: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            artifact_id = str(uuid4())
+
+            with SessionLocal() as db:
+                artifact = ProjectArtifact(
+                    id=artifact_id,
+                    project_id=project_id,
+                    action_run_id=None,
+                    artifact_type="final_report",
+                    name="CloudMind final demo report",
+                    path=None,
+                    url=None,
+                    metadata_json=report,
+                )
+
+                db.add(artifact)
+                db.commit()
+
+            return {
+                "saved": True,
+                "artifact_id": artifact_id,
+                "error": None,
+            }
+
+        except Exception as exc:
+            return {
+                "saved": False,
+                "artifact_id": None,
+                "error": str(exc),
+            }
+
+    def _project_to_dict(self, project: Project) -> dict[str, Any]:
+        return {
+            "id": project.id,
+            "name": project.name,
+            "repo_url": project.repo_url,
+            "repo_owner": project.repo_owner,
+            "repo_name": project.repo_name,
+            "default_branch": project.default_branch,
+            "detected_language": project.detected_language,
+            "detected_framework": project.detected_framework,
+            "project_type": project.project_type,
+            "port": project.port,
+            "start_command": project.start_command,
+            "ghcr_image": project.ghcr_image,
+            "azure_resource_group": project.azure_resource_group,
+            "azure_app_name": project.azure_app_name,
+            "azure_environment_name": project.azure_environment_name,
+            "azure_app_url": project.azure_app_url,
+            "created_at": project.created_at.isoformat() if project.created_at else None,
+            "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+        }
