@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import re
 from typing import Any
 
 from app.agents.observability_agent import ObservabilityAgent
@@ -5,19 +8,22 @@ from app.agents.observability_agent import ObservabilityAgent
 
 class IncidentResponseAgent:
     """
-    Phase 9 agent.
+    Phase 20I agent.
 
     Responsibilities:
     - consume Azure Container Apps status
     - consume Azure Container Apps logs
-    - detect incidents
+    - detect real incidents
     - classify severity
     - identify likely causes
     - recommend safe remediation actions
     - mark risky actions as requiring human approval
 
-    This agent does NOT automatically modify cloud infrastructure.
-    It only diagnoses and recommends actions.
+    Important behavior:
+    - A successful public health check is the strongest positive signal.
+    - Normal startup logs and "connected" messages are not dependency failures.
+    - Dependency failures are detected only from explicit negative patterns.
+    - This agent does NOT automatically modify cloud infrastructure.
     """
 
     def __init__(self) -> None:
@@ -40,6 +46,7 @@ class IncidentResponseAgent:
                 "message": "resource_group and app_name are required.",
                 "incident_detected": False,
                 "severity": "unknown",
+                "health_path": health_path,
                 "recommendations": [
                     "Provide the Azure resource group and Container App name.",
                 ],
@@ -78,14 +85,16 @@ class IncidentResponseAgent:
         context = context or {}
         logs_result = logs_result or {}
 
+        status_findings = self._analyze_status(status_result)
+        log_findings = self._analyze_logs(logs_result)
+
+        status_is_healthy = self._status_result_is_healthy(status_result)
+
         findings = []
         likely_causes = []
         recommended_actions = []
         evidence = []
         risk_notes = []
-
-        status_findings = self._analyze_status(status_result)
-        log_findings = self._analyze_logs(logs_result)
 
         findings.extend(status_findings["findings"])
         findings.extend(log_findings["findings"])
@@ -105,9 +114,35 @@ class IncidentResponseAgent:
         severity = self._calculate_severity(
             status_findings=status_findings,
             log_findings=log_findings,
+            status_is_healthy=status_is_healthy,
         )
 
         incident_detected = severity in ["medium", "high", "critical"]
+
+        if status_is_healthy and log_findings.get("severity_score", 0) < 4:
+            incident_detected = False
+            severity = "none"
+
+            findings = self._remove_incident_only_findings_when_healthy(findings)
+
+            if not findings:
+                findings.append(
+                    "No active incident detected. Azure status, public health check, and logs look healthy."
+                )
+
+            likely_causes = [
+                "No failure cause detected from the available status and logs."
+            ]
+
+            recommended_actions = [
+                {
+                    "title": "Continue monitoring",
+                    "description": "No remediation action is required right now.",
+                    "risk": "low",
+                    "requires_human_approval": False,
+                    "safe_to_auto_fix": False,
+                }
+            ]
 
         if not incident_detected and not findings:
             findings.append(
@@ -143,6 +178,7 @@ class IncidentResponseAgent:
             "incident_detected": incident_detected,
             "severity": severity,
             "context": context,
+            "health_path": context.get("health_path"),
             "summary": summary,
             "findings": self._deduplicate_strings(findings),
             "likely_causes": self._deduplicate_strings(likely_causes),
@@ -154,6 +190,8 @@ class IncidentResponseAgent:
             "raw": {
                 "status_result": status_result,
                 "logs_result": logs_result,
+                "status_findings": status_findings,
+                "log_findings": log_findings,
             },
         }
 
@@ -171,18 +209,50 @@ class IncidentResponseAgent:
         outer_status = status_result.get("status")
         result = status_result.get("result", status_result)
 
-        healthy = result.get("healthy")
+        healthy = self._status_result_is_healthy(status_result)
         azure = result.get("azure", {}) or {}
         health = result.get("health", {}) or {}
         revisions = result.get("revisions", {}) or {}
 
-        provisioning_state = azure.get("provisioning_state")
-        running_status = azure.get("running_status")
-        latest_ready_revision_name = azure.get("latest_ready_revision_name")
+        provisioning_state = (
+            azure.get("provisioning_state")
+            or azure.get("provisioningState")
+        )
+        running_status = (
+            azure.get("running_status")
+            or azure.get("runningStatus")
+        )
+        latest_ready_revision_name = (
+            azure.get("latest_ready_revision_name")
+            or azure.get("latestReadyRevisionName")
+        )
+        latest_revision_name = (
+            azure.get("latest_revision_name")
+            or azure.get("latestRevisionName")
+        )
         fqdn = azure.get("fqdn")
         target_port = azure.get("target_port")
         min_replicas = azure.get("min_replicas")
         max_replicas = azure.get("max_replicas")
+
+        if healthy:
+            findings.append(
+                "Azure Container App public health check is healthy."
+            )
+            evidence.append(
+                self._format_health_evidence(health=health, azure=azure)
+            )
+
+            if provisioning_state:
+                evidence.append(f"provisioning_state={provisioning_state}")
+
+            if running_status:
+                evidence.append(f"running_status={running_status}")
+
+            if latest_ready_revision_name or latest_revision_name:
+                evidence.append(
+                    f"revision={latest_ready_revision_name or latest_revision_name}"
+                )
 
         if outer_status in ["failed", "not_found"]:
             severity_score = max(severity_score, 4)
@@ -247,7 +317,7 @@ class IncidentResponseAgent:
                 }
             )
 
-        if not latest_ready_revision_name:
+        if not healthy and not latest_ready_revision_name:
             severity_score = max(severity_score, 4)
             findings.append(
                 "No latest ready revision was detected."
@@ -268,7 +338,7 @@ class IncidentResponseAgent:
                 }
             )
 
-        if not fqdn:
+        if not healthy and not fqdn:
             severity_score = max(severity_score, 3)
             findings.append(
                 "No public FQDN was found for the app."
@@ -289,7 +359,7 @@ class IncidentResponseAgent:
                 }
             )
 
-        if healthy is False:
+        if result.get("healthy") is False and not healthy:
             severity_score = max(severity_score, 3)
             findings.append(
                 "The public health check is not healthy."
@@ -328,14 +398,16 @@ class IncidentResponseAgent:
             recommended_actions.append(
                 {
                     "title": "Verify health endpoint",
-                    "description": "Open the app URL and /health endpoint in the browser and confirm they return HTTP 200.",
+                    "description": "Open the app URL and the configured health endpoint in the browser and confirm it returns HTTP 200.",
                     "risk": "low",
                     "requires_human_approval": False,
                     "safe_to_auto_fix": False,
                 }
             )
 
-        if health.get("status_code") and not (200 <= int(health["status_code"]) < 400):
+        status_code = health.get("status_code")
+
+        if status_code and not (200 <= int(status_code) < 400):
             severity_score = max(severity_score, 3)
             findings.append(
                 "The health endpoint returned a non-success HTTP status code."
@@ -344,7 +416,7 @@ class IncidentResponseAgent:
                 "The application route may be missing, returning an error, or protected by middleware."
             )
             evidence.append(
-                f"health_status_code={health.get('status_code')}"
+                f"health_status_code={status_code}"
             )
             recommended_actions.append(
                 {
@@ -356,17 +428,22 @@ class IncidentResponseAgent:
                 }
             )
 
-        if revisions.get("status") != "success":
-            severity_score = max(severity_score, 2)
-            findings.append(
-                "CloudMind could not retrieve revision details."
-            )
-            likely_causes.append(
-                "Azure permissions or revision API access may be limited."
-            )
-            evidence.append(
-                f"revisions={revisions}"
-            )
+        if revisions and revisions.get("status") != "success":
+            if healthy:
+                risk_notes.append(
+                    "CloudMind could not retrieve revision details, but the public health check passed."
+                )
+            else:
+                severity_score = max(severity_score, 2)
+                findings.append(
+                    "CloudMind could not retrieve revision details."
+                )
+                likely_causes.append(
+                    "Azure permissions or revision API access may be limited."
+                )
+                evidence.append(
+                    f"revisions={revisions}"
+                )
 
         if min_replicas == 0:
             risk_notes.append(
@@ -378,7 +455,7 @@ class IncidentResponseAgent:
                 "max_replicas=1 is cost-friendly but limits high-availability and scaling."
             )
 
-        if target_port and target_port != 8000:
+        if target_port:
             risk_notes.append(
                 f"Target port is {target_port}. Verify it matches the application container port."
             )
@@ -404,13 +481,13 @@ class IncidentResponseAgent:
         severity_score = 0
 
         if not logs_result:
-            findings.append(
+            risk_notes.append(
                 "No logs were provided to the incident analyzer."
             )
             recommended_actions.append(
                 {
                     "title": "Retrieve logs",
-                    "description": "Run the observability logs endpoint before incident diagnosis.",
+                    "description": "Run the observability logs endpoint before deeper incident diagnosis.",
                     "risk": "low",
                     "requires_human_approval": False,
                     "safe_to_auto_fix": False,
@@ -418,7 +495,7 @@ class IncidentResponseAgent:
             )
 
             return {
-                "severity_score": 1,
+                "severity_score": 0,
                 "findings": findings,
                 "likely_causes": likely_causes,
                 "recommended_actions": recommended_actions,
@@ -431,12 +508,8 @@ class IncidentResponseAgent:
         logs = result.get("logs")
 
         if logs_status == "failed":
-            severity_score = max(severity_score, 2)
-            findings.append(
+            risk_notes.append(
                 "CloudMind could not retrieve application logs."
-            )
-            likely_causes.append(
-                "Log Analytics may not be configured, permissions may be missing, or the query may have failed."
             )
             evidence.append(
                 str(result.get("message", "Logs retrieval failed."))
@@ -452,7 +525,7 @@ class IncidentResponseAgent:
             )
 
             return {
-                "severity_score": severity_score,
+                "severity_score": 1,
                 "findings": findings,
                 "likely_causes": likely_causes,
                 "recommended_actions": recommended_actions,
@@ -463,16 +536,13 @@ class IncidentResponseAgent:
         normalized_logs = self._normalize_logs(logs)
 
         if not normalized_logs:
-            findings.append(
-                "No recent logs were returned."
-            )
-            likely_causes.append(
-                "The app may not have produced logs recently or Log Analytics ingestion may be delayed."
+            risk_notes.append(
+                "No recent logs were returned. This can be normal if the app has not emitted logs recently or Log Analytics ingestion is delayed."
             )
             recommended_actions.append(
                 {
                     "title": "Generate traffic and retry logs",
-                    "description": "Open the app URL and /health endpoint, wait a few seconds, then retry logs.",
+                    "description": "Open the app URL and the configured health endpoint, wait a few seconds, then retry logs.",
                     "risk": "low",
                     "requires_human_approval": False,
                     "safe_to_auto_fix": False,
@@ -480,13 +550,15 @@ class IncidentResponseAgent:
             )
 
             return {
-                "severity_score": 1,
+                "severity_score": 0,
                 "findings": findings,
                 "likely_causes": likely_causes,
                 "recommended_actions": recommended_actions,
                 "evidence": evidence,
                 "risk_notes": risk_notes,
             }
+
+        normal_log_count = 0
 
         for log_item in normalized_logs:
             log_text = log_item.get("text", "")
@@ -495,18 +567,14 @@ class IncidentResponseAgent:
             timestamp = log_item.get("timestamp")
             source_type = log_item.get("type")
 
-            if self._contains_any(
-                lower,
-                [
-                    "imagepullbackoff",
-                    "errimagepull",
-                    "failed to pull image",
-                    "unauthorized",
-                    "authentication required",
-                    "denied",
-                    "manifest unknown",
-                ],
-            ):
+            if self._is_benign_log(lower=lower, reason=reason):
+                normal_log_count += 1
+                evidence.append(
+                    self._format_log_evidence(timestamp, source_type, log_text)
+                )
+                continue
+
+            if self._is_image_pull_failure(lower):
                 severity_score = max(severity_score, 5)
                 findings.append(
                     "Image pull failure detected in logs."
@@ -526,104 +594,9 @@ class IncidentResponseAgent:
                         "safe_to_auto_fix": False,
                     }
                 )
+                continue
 
-            if self._contains_any(
-                lower,
-                [
-                    "no module named",
-                    "modulenotfounderror",
-                    "importerror",
-                    "cannot import name",
-                ],
-            ):
-                severity_score = max(severity_score, 4)
-                findings.append(
-                    "Missing Python dependency or import failure detected."
-                )
-                likely_causes.append(
-                    "requirements.txt may be missing a required dependency, or the Docker image was built without the needed package."
-                )
-                evidence.append(
-                    self._format_log_evidence(timestamp, source_type, log_text)
-                )
-                recommended_actions.append(
-                    {
-                        "title": "Update dependencies",
-                        "description": "Add the missing dependency to requirements.txt, rebuild the Docker image, and redeploy through CI/CD.",
-                        "risk": "medium",
-                        "requires_human_approval": True,
-                        "safe_to_auto_fix": False,
-                    }
-                )
-
-            if self._contains_any(
-                lower,
-                [
-                    "traceback",
-                    "exception",
-                    "runtimeerror",
-                    "valueerror",
-                    "typeerror",
-                    "syntaxerror",
-                ],
-            ):
-                severity_score = max(severity_score, 4)
-                findings.append(
-                    "Application exception detected in logs."
-                )
-                likely_causes.append(
-                    "The application is throwing runtime errors during startup or request handling."
-                )
-                evidence.append(
-                    self._format_log_evidence(timestamp, source_type, log_text)
-                )
-                recommended_actions.append(
-                    {
-                        "title": "Inspect stack trace",
-                        "description": "Review the traceback, reproduce locally, fix the code, then redeploy through a pull request.",
-                        "risk": "medium",
-                        "requires_human_approval": True,
-                        "safe_to_auto_fix": False,
-                    }
-                )
-
-            if self._contains_any(
-                lower,
-                [
-                    "address already in use",
-                    "bind",
-                    "port already allocated",
-                ],
-            ):
-                severity_score = max(severity_score, 4)
-                findings.append(
-                    "Port binding issue detected."
-                )
-                likely_causes.append(
-                    "The app may be trying to bind to a wrong or unavailable port."
-                )
-                evidence.append(
-                    self._format_log_evidence(timestamp, source_type, log_text)
-                )
-                recommended_actions.append(
-                    {
-                        "title": "Verify application port",
-                        "description": "Ensure the app listens on 0.0.0.0 and on the same port configured in Azure ingress.",
-                        "risk": "medium",
-                        "requires_human_approval": True,
-                        "safe_to_auto_fix": False,
-                    }
-                )
-
-            if self._contains_any(
-                lower,
-                [
-                    "connection refused",
-                    "connection timed out",
-                    "could not connect",
-                    "name or service not known",
-                ],
-            ):
+            if self._is_dependency_failure(lower):
                 severity_score = max(severity_score, 3)
                 findings.append(
                     "Dependency connection failure detected."
@@ -643,15 +616,75 @@ class IncidentResponseAgent:
                         "safe_to_auto_fix": False,
                     }
                 )
+                continue
 
-            if self._contains_any(
-                lower,
-                [
-                    "oomkilled",
-                    "out of memory",
-                    "memory limit exceeded",
-                ],
-            ):
+            if self._is_missing_dependency_error(lower):
+                severity_score = max(severity_score, 4)
+                findings.append(
+                    "Missing dependency or import failure detected."
+                )
+                likely_causes.append(
+                    "The Docker image may have been built without a needed dependency, or the code imports a package that is not installed."
+                )
+                evidence.append(
+                    self._format_log_evidence(timestamp, source_type, log_text)
+                )
+                recommended_actions.append(
+                    {
+                        "title": "Update dependencies",
+                        "description": "Add the missing dependency to the package manifest, rebuild the Docker image, and redeploy through CI/CD.",
+                        "risk": "medium",
+                        "requires_human_approval": True,
+                        "safe_to_auto_fix": False,
+                    }
+                )
+                continue
+
+            if self._is_application_exception(lower):
+                severity_score = max(severity_score, 4)
+                findings.append(
+                    "Application exception detected in logs."
+                )
+                likely_causes.append(
+                    "The application is throwing runtime errors during startup or request handling."
+                )
+                evidence.append(
+                    self._format_log_evidence(timestamp, source_type, log_text)
+                )
+                recommended_actions.append(
+                    {
+                        "title": "Inspect stack trace",
+                        "description": "Review the stack trace, reproduce locally, fix the code, then redeploy through a pull request.",
+                        "risk": "medium",
+                        "requires_human_approval": True,
+                        "safe_to_auto_fix": False,
+                    }
+                )
+                continue
+
+            if self._is_port_binding_failure(lower):
+                severity_score = max(severity_score, 4)
+                findings.append(
+                    "Port binding issue detected."
+                )
+                likely_causes.append(
+                    "The app may be trying to bind to a wrong or unavailable port."
+                )
+                evidence.append(
+                    self._format_log_evidence(timestamp, source_type, log_text)
+                )
+                recommended_actions.append(
+                    {
+                        "title": "Verify application port",
+                        "description": "Ensure the app listens on 0.0.0.0 and on the same port configured in Azure ingress.",
+                        "risk": "medium",
+                        "requires_human_approval": True,
+                        "safe_to_auto_fix": False,
+                    }
+                )
+                continue
+
+            if self._is_oom_failure(lower):
                 severity_score = max(severity_score, 5)
                 findings.append(
                     "Out-of-memory failure detected."
@@ -671,14 +704,9 @@ class IncidentResponseAgent:
                         "safe_to_auto_fix": False,
                     }
                 )
+                continue
 
-            if self._contains_any(
-                lower,
-                [
-                    "crashloopbackoff",
-                    "back-off restarting failed container",
-                ],
-            ):
+            if self._is_crash_loop(lower):
                 severity_score = max(severity_score, 5)
                 findings.append(
                     "Crash loop detected."
@@ -698,37 +726,7 @@ class IncidentResponseAgent:
                         "safe_to_auto_fix": False,
                     }
                 )
-
-            if "containerterminated" in reason and "manuallystopped" in lower:
-                risk_notes.append(
-                    "The logs contain ManuallyStopped termination events. This is usually normal when min_replicas=0 scales the app down."
-                )
-                evidence.append(
-                    self._format_log_evidence(timestamp, source_type, log_text)
-                )
-
-            if "kedascaltargetdeactivated" in reason or "kedascale" in lower:
-                risk_notes.append(
-                    "The logs contain KEDA scale-to-zero activity. This is normal for cost-optimized Container Apps with min_replicas=0."
-                )
-                evidence.append(
-                    self._format_log_evidence(timestamp, source_type, log_text)
-                )
-
-            if "get /health" in lower and "200 ok" in lower:
-                evidence.append(
-                    self._format_log_evidence(timestamp, source_type, log_text)
-                )
-
-            if "application startup complete" in lower:
-                evidence.append(
-                    self._format_log_evidence(timestamp, source_type, log_text)
-                )
-
-            if "successfully pulled image" in lower:
-                evidence.append(
-                    self._format_log_evidence(timestamp, source_type, log_text)
-                )
+                continue
 
         if severity_score == 0:
             findings.append(
@@ -737,6 +735,11 @@ class IncidentResponseAgent:
             likely_causes.append(
                 "No incident cause detected in recent logs."
             )
+
+            if normal_log_count:
+                evidence.append(
+                    f"Normal log lines inspected: {normal_log_count}"
+                )
 
         return {
             "severity_score": severity_score,
@@ -757,6 +760,19 @@ class IncidentResponseAgent:
             return normalized
 
         for item in logs:
+            if isinstance(item, str):
+                normalized.append(
+                    {
+                        "timestamp": None,
+                        "type": None,
+                        "container_app_name": None,
+                        "revision_name": None,
+                        "text": item,
+                        "reason": "",
+                    }
+                )
+                continue
+
             if not isinstance(item, dict):
                 continue
 
@@ -765,12 +781,18 @@ class IncidentResponseAgent:
                 or item.get("Message")
                 or item.get("message")
                 or item.get("log")
+                or item.get("text")
                 or ""
             )
 
             normalized.append(
                 {
-                    "timestamp": item.get("TimeGenerated") or item.get("time") or item.get("timestamp"),
+                    "timestamp": (
+                        item.get("TimeGenerated")
+                        or item.get("TimeStamp")
+                        or item.get("time")
+                        or item.get("timestamp")
+                    ),
                     "type": item.get("Type") or item.get("type"),
                     "container_app_name": item.get("ContainerAppName") or item.get("ContainerAppName_s"),
                     "revision_name": item.get("RevisionName") or item.get("RevisionName_s"),
@@ -781,15 +803,293 @@ class IncidentResponseAgent:
 
         return normalized
 
+    def _status_result_is_healthy(
+        self,
+        status_result: dict[str, Any],
+    ) -> bool:
+        if status_result.get("healthy") is True:
+            return True
+
+        status = str(status_result.get("status", "")).lower()
+
+        if status in {"healthy", "success", "completed", "verification_passed"}:
+            return True
+
+        result = status_result.get("result")
+
+        if isinstance(result, dict):
+            if result.get("healthy") is True:
+                return True
+
+            nested_status = str(result.get("status", "")).lower()
+
+            if nested_status in {"healthy", "success", "completed", "verification_passed"}:
+                return True
+
+            health = result.get("health")
+
+            if isinstance(health, dict) and self._health_dict_is_healthy(health):
+                return True
+
+        health = status_result.get("health")
+
+        if isinstance(health, dict) and self._health_dict_is_healthy(health):
+            return True
+
+        return False
+
+    def _health_dict_is_healthy(
+        self,
+        health: dict[str, Any],
+    ) -> bool:
+        if health.get("healthy") is True:
+            return True
+
+        status = str(health.get("status", "")).lower()
+
+        if status in {"healthy", "success", "completed"}:
+            return True
+
+        status_code = health.get("status_code")
+
+        if status_code is not None:
+            try:
+                return 200 <= int(status_code) < 400
+            except (TypeError, ValueError):
+                return False
+
+        return False
+
+    def _format_health_evidence(
+        self,
+        health: dict[str, Any],
+        azure: dict[str, Any],
+    ) -> str:
+        url = health.get("url")
+        status_code = health.get("status_code")
+        response_preview = (
+            health.get("response_preview")
+            or health.get("body_preview")
+            or ""
+        )
+
+        parts = []
+
+        if url:
+            parts.append(f"health_url={url}")
+
+        if status_code:
+            parts.append(f"status_code={status_code}")
+
+        if response_preview:
+            parts.append(f"response_preview={str(response_preview)[:160]}")
+
+        fqdn = azure.get("fqdn")
+
+        if fqdn:
+            parts.append(f"fqdn={fqdn}")
+
+        return "; ".join(parts) if parts else "Health check returned a successful result."
+
+    def _is_benign_log(
+        self,
+        lower: str,
+        reason: str,
+    ) -> bool:
+        benign_phrases = [
+            "connecting to the container",
+            "successfully connected to container",
+            "successfully connected",
+            "connected to container",
+            "backend is connected",
+            "the node.js backend is connected",
+            "is running at http://localhost",
+            "via-vai-fullstack",
+            "npm start",
+            "node backend/server.js",
+            "application startup complete",
+            "server started",
+            "listening on",
+            "started server",
+            "health endpoint responded successfully",
+            "get /health",
+            "get /api/status",
+            "200 ok",
+            "successfully pulled image",
+            "pulled image",
+        ]
+
+        if any(phrase in lower for phrase in benign_phrases):
+            return True
+
+        if "containerterminated" in reason and "manuallystopped" in lower:
+            return True
+
+        if "kedascaltargetdeactivated" in reason:
+            return True
+
+        if "kedascale" in lower:
+            return True
+
+        return False
+
+    def _is_image_pull_failure(
+        self,
+        lower: str,
+    ) -> bool:
+        patterns = [
+            r"\bimagepullbackoff\b",
+            r"\berrimagepull\b",
+            r"failed\s+to\s+pull\s+image",
+            r"\bmanifest\s+unknown\b",
+            r"\bunauthorized\b.*\b(ghcr|registry|image|pull)\b",
+            r"\bauthentication\s+required\b.*\b(ghcr|registry|image|pull)\b",
+            r"\bdenied\b.*\b(ghcr|registry|image|pull)\b",
+        ]
+
+        return self._matches_any_regex(lower, patterns)
+
+    def _is_dependency_failure(
+        self,
+        lower: str,
+    ) -> bool:
+        if self._is_positive_connection_log(lower):
+            return False
+
+        patterns = [
+            r"\beconnrefused\b",
+            r"\betimedout\b",
+            r"\benotfound\b",
+            r"\bconnection\s+refused\b",
+            r"\bconnection\s+timed\s+out\b",
+            r"\bconnect\s+econnrefused\b",
+            r"\bconnect\s+etimedout\b",
+            r"\bfailed\s+to\s+connect\b",
+            r"\bcould\s+not\s+connect\b",
+            r"\bunable\s+to\s+connect\b",
+            r"\bdatabase\s+unavailable\b",
+            r"\bdatabase\s+connection\s+failed\b",
+            r"\bdns\s+lookup\s+failed\b",
+            r"\bgetaddrinfo\s+enotfound\b",
+            r"\bauthentication\s+failed\b",
+            r"\blogin\s+failed\b",
+        ]
+
+        return self._matches_any_regex(lower, patterns)
+
+    def _is_positive_connection_log(
+        self,
+        lower: str,
+    ) -> bool:
+        positive_patterns = [
+            "successfully connected",
+            "connected to container",
+            "backend is connected",
+            "node.js backend is connected",
+            "database connected",
+            "connected successfully",
+            "connection established",
+        ]
+
+        return any(pattern in lower for pattern in positive_patterns)
+
+    def _is_missing_dependency_error(
+        self,
+        lower: str,
+    ) -> bool:
+        patterns = [
+            r"\bno\s+module\s+named\b",
+            r"\bmodulenotfounderror\b",
+            r"\bimporterror\b",
+            r"\bcannot\s+import\s+name\b",
+            r"\berr_module_not_found\b",
+            r"\bcannot\s+find\s+module\b",
+            r"\bmodule\s+not\s+found\b",
+        ]
+
+        return self._matches_any_regex(lower, patterns)
+
+    def _is_application_exception(
+        self,
+        lower: str,
+    ) -> bool:
+        if "no exception" in lower:
+            return False
+
+        patterns = [
+            r"\btraceback\b",
+            r"\bunhandled\s+exception\b",
+            r"\bfatal\s+exception\b",
+            r"\bruntimeerror\b",
+            r"\bvalueerror\b",
+            r"\btypeerror\b",
+            r"\bsyntaxerror\b",
+            r"\breferenceerror\b",
+            r"\bunhandledrejection\b",
+        ]
+
+        return self._matches_any_regex(lower, patterns)
+
+    def _is_port_binding_failure(
+        self,
+        lower: str,
+    ) -> bool:
+        patterns = [
+            r"\baddress\s+already\s+in\s+use\b",
+            r"\beaddrinuse\b",
+            r"\bport\s+already\s+allocated\b",
+            r"\bfailed\s+to\s+bind\b",
+            r"\bcannot\s+bind\b",
+            r"\bbind\s+eacces\b",
+        ]
+
+        return self._matches_any_regex(lower, patterns)
+
+    def _is_oom_failure(
+        self,
+        lower: str,
+    ) -> bool:
+        patterns = [
+            r"\boomkilled\b",
+            r"\bout\s+of\s+memory\b",
+            r"\bmemory\s+limit\s+exceeded\b",
+            r"\bjavascript\s+heap\s+out\s+of\s+memory\b",
+        ]
+
+        return self._matches_any_regex(lower, patterns)
+
+    def _is_crash_loop(
+        self,
+        lower: str,
+    ) -> bool:
+        patterns = [
+            r"\bcrashloopbackoff\b",
+            r"\bback-off\s+restarting\s+failed\s+container\b",
+            r"\bcontainer\s+restarted\s+repeatedly\b",
+        ]
+
+        return self._matches_any_regex(lower, patterns)
+
+    def _matches_any_regex(
+        self,
+        text: str,
+        patterns: list[str],
+    ) -> bool:
+        return any(re.search(pattern, text) for pattern in patterns)
+
     def _calculate_severity(
         self,
         status_findings: dict[str, Any],
         log_findings: dict[str, Any],
+        status_is_healthy: bool = False,
     ) -> str:
-        score = max(
-            status_findings.get("severity_score", 0),
-            log_findings.get("severity_score", 0),
-        )
+        status_score = status_findings.get("severity_score", 0)
+        log_score = log_findings.get("severity_score", 0)
+
+        if status_is_healthy and log_score < 4:
+            score = 0
+        else:
+            score = max(status_score, log_score)
 
         if score >= 5:
             return "critical"
@@ -805,6 +1105,23 @@ class IncidentResponseAgent:
 
         return "none"
 
+    def _remove_incident_only_findings_when_healthy(
+        self,
+        findings: list[str],
+    ) -> list[str]:
+        removed_phrases = [
+            "Dependency connection failure detected.",
+            "The public health check is not healthy.",
+            "The health endpoint returned a non-success HTTP status code.",
+            "CloudMind could not retrieve revision details.",
+        ]
+
+        return [
+            finding
+            for finding in findings
+            if finding not in removed_phrases
+        ]
+
     def _build_summary(
         self,
         incident_detected: bool,
@@ -813,12 +1130,19 @@ class IncidentResponseAgent:
         context: dict[str, Any],
     ) -> str:
         app_name = context.get("app_name", "application")
+        health_path = context.get("health_path")
 
         if incident_detected:
             return (
                 f"Incident detected for {app_name}. "
                 f"Severity: {severity}. "
                 f"Main finding: {findings[0] if findings else 'Unknown issue.'}"
+            )
+
+        if health_path:
+            return (
+                f"No active incident detected for {app_name}. "
+                f"The app appears healthy based on Azure status, logs, and health path {health_path}."
             )
 
         return (
@@ -835,13 +1159,6 @@ class IncidentResponseAgent:
                 return True
 
         return False
-
-    def _contains_any(
-        self,
-        text: str,
-        patterns: list[str],
-    ) -> bool:
-        return any(pattern in text for pattern in patterns)
 
     def _format_log_evidence(
         self,

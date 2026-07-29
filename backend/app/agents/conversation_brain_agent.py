@@ -12,11 +12,12 @@ class ConversationBrainAgent:
     """
     Conversational brain for CloudMind.
 
-    Phase 17:
+    Phase 20H:
     - Uses PostgreSQL ProjectMemoryAgent for persistent project memory.
     - Stores projects, conversations, messages, action runs, PRs, generated files, and deployments.
     - Hydrates tool arguments from project history.
-    - Keeps the old in-memory session as short-term live state.
+    - Passes detected health_path automatically to runtime tools.
+    - Does not force /health as a fallback when the repository exposes a different health endpoint.
     """
 
     SUCCESS_STATUSES = [
@@ -33,6 +34,7 @@ class ConversationBrainAgent:
         "deployed",
         "deployed_with_warnings",
         "no_changes",
+        "no_incident",
     ]
 
     REPO_WRITE_INTENTS = [
@@ -45,6 +47,14 @@ class ConversationBrainAgent:
 
     CLOUD_WRITE_INTENTS = [
         "deploy_azure_runtime",
+    ]
+
+    RUNTIME_INTENTS = [
+        "check_azure_status",
+        "get_azure_logs",
+        "analyze_incident",
+        "plan_remediation",
+        "verify_azure_deployment",
     ]
 
     def __init__(self) -> None:
@@ -76,6 +86,12 @@ class ConversationBrainAgent:
         app_name = app_name or extracted.get("app_name") or context.get("app_name")
         pull_request_url = pull_request_url or extracted.get("pull_request_url") or context.get("pull_request_url")
 
+        health_path = (
+            extracted.get("health_path")
+            or context.get("health_path")
+            or context.get("detected_health_path")
+        )
+
         project = None
         project_id = None
         project_context = None
@@ -90,6 +106,7 @@ class ConversationBrainAgent:
             resource_group = resource_group or hydrated.get("resource_group")
             app_name = app_name or hydrated.get("app_name")
             pull_request_url = pull_request_url or hydrated.get("pull_request_url")
+            health_path = health_path or hydrated.get("health_path")
 
         self.project_memory.create_or_get_session(
             session_id=session_id,
@@ -112,6 +129,7 @@ class ConversationBrainAgent:
             "resource_group": resource_group,
             "app_name": app_name,
             "latest_pr_url": pull_request_url,
+            "health_path": health_path,
         }
 
         self.memory.update_state(
@@ -136,6 +154,7 @@ class ConversationBrainAgent:
                 "app_name": app_name,
                 "pull_request_url": pull_request_url,
                 "project_id": project_id,
+                "health_path": health_path,
             },
         )
 
@@ -149,6 +168,7 @@ class ConversationBrainAgent:
                 "app_name": app_name,
                 "pull_request_url": pull_request_url,
                 "project_id": project_id,
+                "health_path": health_path,
             },
         )
 
@@ -239,7 +259,7 @@ class ConversationBrainAgent:
         return {
             "status": "success",
             "message": "Conversation processed.",
-            "phase": "phase_17_postgresql_project_memory",
+            "phase": "phase_20h_health_path_aware_chat_brain",
             "session_id": session_id,
             "project_id": project_id,
             "intent": intent,
@@ -266,6 +286,7 @@ class ConversationBrainAgent:
                 "direct_main_push": False,
                 "auto_merge": False,
                 "auto_deploy_without_approval": False,
+                "health_path_auto_detection": True,
             },
         }
 
@@ -446,7 +467,7 @@ class ConversationBrainAgent:
                 "image": state.get("ghcr_image"),
                 "resource_group": state.get("resource_group"),
                 "app_name": state.get("app_name"),
-                "health_path": state.get("health_path") or "/health",
+                "health_path": state.get("health_path"),
                 "azure_location": "francecentral",
                 "min_replicas": 0,
                 "max_replicas": 1,
@@ -486,17 +507,12 @@ class ConversationBrainAgent:
                 "arguments": arguments,
             }
 
-        if intent in [
-            "check_azure_status",
-            "get_azure_logs",
-            "analyze_incident",
-            "plan_remediation",
-            "verify_azure_deployment",
-        ]:
+        if intent in self.RUNTIME_INTENTS:
             arguments = {
+                "repo_url": state.get("repo_url"),
                 "resource_group": state.get("resource_group"),
                 "app_name": state.get("app_name"),
-                "health_path": state.get("health_path") or "/health",
+                "health_path": state.get("health_path"),
                 "timeout_seconds": 60,
                 "log_tail": 100,
                 "tail": 100,
@@ -522,7 +538,7 @@ class ConversationBrainAgent:
                 "app_name": state.get("app_name"),
                 "pull_request_url": state.get("latest_pr_url"),
                 "pull_request_number": state.get("latest_pr_number"),
-                "health_path": state.get("health_path") or "/health",
+                "health_path": state.get("health_path"),
                 "timeout_seconds": 60,
                 "log_tail": 100,
                 "environment": "development",
@@ -649,11 +665,19 @@ class ConversationBrainAgent:
 
         start_command = "not detected"
         port = "not detected"
+        health_path = tool_result.get("health_path") or "not detected"
 
-        if components:
+        primary_component = tool_result.get("primary_component")
+
+        if isinstance(primary_component, dict):
+            start_command = primary_component.get("start_command") or start_command
+            port = primary_component.get("port") or port
+            health_path = primary_component.get("health_path") or health_path
+        elif components:
             first_component = components[0]
-            start_command = first_component.get("start_command") or "not detected"
-            port = first_component.get("port") or "not detected"
+            start_command = first_component.get("start_command") or start_command
+            port = first_component.get("port") or port
+            health_path = first_component.get("health_path") or health_path
 
         missing_text = ", ".join(missing_devops_files) if missing_devops_files else "None"
 
@@ -669,6 +693,7 @@ class ConversationBrainAgent:
             f"Detected framework: {framework}\n"
             f"Port: {port}\n"
             f"Start command: {start_command}\n"
+            f"Health path: {health_path}\n"
             f"Missing DevOps files: {missing_text}"
             f"{recommendation_text}\n\n"
             "Next, I can generate DevOps files through GitHub pull requests or deploy the app to Azure after the image exists."
@@ -728,30 +753,37 @@ class ConversationBrainAgent:
             f"Environment decision: {environment_decision}\n"
             f"Image: {tool_result.get('image')}\n"
             f"URL: {tool_result.get('app_url')}\n"
+            f"Health path: {tool_result.get('health_path')}\n"
             f"Health: {health_text}\n\n"
             f"{tool_result.get('message')}\n\n"
             "Next, I can check Azure status, analyze incidents, or generate the final demo report."
         )
 
     def _azure_status_message(self, tool_result: dict[str, Any]) -> str:
-        healthy = tool_result.get("healthy")
-        app_url = tool_result.get("app_url")
+        healthy = self._status_result_is_healthy(tool_result)
+        app_url = tool_result.get("app_url") or tool_result.get("url")
         azure = tool_result.get("azure", {})
         running_status = azure.get("running_status")
-        revision = azure.get("latest_ready_revision_name")
+        revision = azure.get("latest_ready_revision_name") or azure.get("latest_revision_name")
+        health_path = tool_result.get("health_path")
+        health_path_source = tool_result.get("health_path_source")
 
         if healthy:
             return (
                 "Azure Container App is healthy. I saved the health check in project history.\n\n"
                 f"Running status: {running_status}\n"
                 f"Revision: {revision}\n"
-                f"URL: {app_url}"
+                f"URL: {app_url}\n"
+                f"Health path: {health_path}\n"
+                f"Health path source: {health_path_source}"
             )
 
         return (
             "Azure Container App is not healthy or could not be verified. I saved this status in project history.\n\n"
             f"Status: {tool_result.get('status')}\n"
-            f"Message: {tool_result.get('message')}"
+            f"Message: {tool_result.get('message')}\n"
+            f"Health path used: {health_path}\n"
+            f"Health path source: {health_path_source}"
         )
 
     def _azure_logs_message(self, tool_result: dict[str, Any]) -> str:
@@ -768,19 +800,25 @@ class ConversationBrainAgent:
         incident_detected = result.get("incident_detected")
         severity = result.get("severity", "unknown")
         summary = result.get("summary", result.get("message", ""))
+        health_path = result.get("health_path") or tool_result.get("health_path")
+        health_path_source = result.get("health_path_source") or tool_result.get("health_path_source")
 
         if incident_detected:
             return (
                 "I detected a possible incident and saved the incident analysis in project history.\n\n"
                 f"Severity: {severity}\n"
-                f"Summary: {summary}\n\n"
+                f"Summary: {summary}\n"
+                f"Health path used: {health_path}\n"
+                f"Health path source: {health_path_source}\n\n"
                 "Next, I can create a remediation plan."
             )
 
         return (
             "No active incident was detected. I saved the incident analysis in project history.\n\n"
             f"Severity: {severity}\n"
-            f"Summary: {summary}"
+            f"Summary: {summary}\n"
+            f"Health path used: {health_path}\n"
+            f"Health path source: {health_path_source}"
         )
 
     def _remediation_message(self, tool_result: dict[str, Any]) -> str:
@@ -823,14 +861,32 @@ class ConversationBrainAgent:
     def _final_report_message(self, tool_result: dict[str, Any]) -> str:
         status = tool_result.get("status")
         demo_ready = tool_result.get("demo_ready")
-        recommendation = tool_result.get("demo_recommendation")
+        recommendation = tool_result.get("demo_recommendation") or tool_result.get("recommendation")
         summary = tool_result.get("executive_summary", "")
+        health_path = tool_result.get("health_path")
+        health_path_source = tool_result.get("health_path_source")
+
+        if status == "demo_blocked":
+            blockers = tool_result.get("blockers") or []
+            blocker_text = "\n".join(f"- {item}" for item in blockers)
+
+            return (
+                "Final CloudMind demo report was blocked because runtime verification is not clean.\n\n"
+                f"Status: {status}\n"
+                f"Demo ready: {demo_ready}\n"
+                f"Recommendation: {recommendation}\n"
+                f"Health path used: {health_path}\n"
+                f"Health path source: {health_path_source}\n\n"
+                f"Blockers:\n{blocker_text}"
+            )
 
         return (
             "Final CloudMind demo report generated and saved in project history.\n\n"
             f"Status: {status}\n"
             f"Demo ready: {demo_ready}\n"
-            f"Recommendation: {recommendation}\n\n"
+            f"Recommendation: {recommendation}\n"
+            f"Health path used: {health_path}\n"
+            f"Health path source: {health_path_source}\n\n"
             f"{summary}"
         )
 
@@ -843,6 +899,7 @@ class ConversationBrainAgent:
         repo_url = state.get("repo_url")
         resource_group = state.get("resource_group")
         app_name = state.get("app_name")
+        health_path = state.get("health_path")
 
         suggestions: list[dict[str, str]] = []
 
@@ -862,12 +919,16 @@ class ConversationBrainAgent:
                         "message": "Generate Docker files for this repo",
                     },
                     {
-                        "label": "Publish CI/CD PR",
-                        "message": "Generate CI/CD for this repo",
+                        "label": "Publish Kubernetes PR",
+                        "message": "Generate Kubernetes manifests for this repo",
                     },
                     {
-                        "label": "Deploy to Azure",
-                        "message": "Deploy this app to Azure",
+                        "label": "Publish Azure PR",
+                        "message": "Generate Azure deployment files for this repo",
+                    },
+                    {
+                        "label": "Publish CI/CD PR",
+                        "message": "Generate CI/CD for this repo",
                     },
                 ]
             )
@@ -881,15 +942,17 @@ class ConversationBrainAgent:
             )
 
         if resource_group and app_name:
+            health_suffix = f" using health path {health_path}" if health_path else ""
+
             suggestions.extend(
                 [
                     {
                         "label": "Check Azure status",
-                        "message": f"Check Azure status for resource group {resource_group} and app {app_name}",
+                        "message": f"Check Azure status for resource group {resource_group} and app {app_name}{health_suffix}",
                     },
                     {
                         "label": "Analyze incident",
-                        "message": "Analyze incident for this Azure app",
+                        "message": f"Analyze incident for this Azure app{health_suffix}",
                     },
                     {
                         "label": "Final report",
@@ -916,8 +979,21 @@ class ConversationBrainAgent:
             "latest_result_status": tool_result.get("status"),
         }
 
+        result_health_path = self._extract_health_path_from_tool_result(tool_result)
+        argument_health_path = action_arguments.get("health_path")
+
+        if result_health_path:
+            updates["health_path"] = result_health_path
+        elif argument_health_path:
+            updates["health_path"] = argument_health_path
+
         if tool_name == "analyze_repository" and self._is_success_status(tool_result.get("status")):
             updates["repo_analysis"] = tool_result
+
+            analysis_health_path = self._extract_health_path_from_analysis(tool_result)
+
+            if analysis_health_path:
+                updates["health_path"] = analysis_health_path
 
             if project_id:
                 self.project_memory.save_repo_analysis(
@@ -977,6 +1053,7 @@ class ConversationBrainAgent:
                     "azure_environment_name": deployment_updates.get("environment_name"),
                     "latest_app_url": deployment_updates.get("url"),
                     "ghcr_image": deployment_updates.get("image"),
+                    "health_path": deployment_updates.get("health_path") or updates.get("health_path"),
                 }
             )
 
@@ -1005,6 +1082,7 @@ class ConversationBrainAgent:
                     "resource_group": deployment_updates.get("resource_group"),
                     "app_name": deployment_updates.get("app_name"),
                     "latest_app_url": deployment_updates.get("url"),
+                    "health_path": deployment_updates.get("health_path") or updates.get("health_path"),
                 }
             )
 
@@ -1057,12 +1135,20 @@ class ConversationBrainAgent:
 
         latest_pr = self._latest_pr_from_artifacts(artifacts)
 
+        health_path = (
+            project.get("health_path")
+            or deployment.get("health_path")
+            or self._extract_health_path_from_project_dict(project)
+            or self._extract_health_path_from_deployment_dict(deployment)
+        )
+
         return {
             "resource_group": project.get("azure_resource_group") or deployment.get("resource_group"),
             "app_name": project.get("azure_app_name") or deployment.get("app_name"),
             "environment_name": project.get("azure_environment_name") or deployment.get("environment_name"),
             "app_url": project.get("azure_app_url") or deployment.get("url"),
             "ghcr_image": project.get("ghcr_image") or deployment.get("image"),
+            "health_path": health_path,
             "pull_request_url": latest_pr.get("url") if latest_pr else None,
             "pull_request_number": latest_pr.get("number") if latest_pr else None,
         }
@@ -1088,6 +1174,7 @@ class ConversationBrainAgent:
                 "azure_environment_name": hydrated.get("environment_name"),
                 "latest_app_url": hydrated.get("app_url"),
                 "ghcr_image": hydrated.get("ghcr_image"),
+                "health_path": hydrated.get("health_path"),
                 "latest_pr_url": hydrated.get("pull_request_url"),
                 "latest_pr_number": hydrated.get("pull_request_number"),
             }
@@ -1121,13 +1208,20 @@ class ConversationBrainAgent:
         health = tool_result.get("health") or {}
         healthy = tool_result.get("healthy")
 
-        if healthy is None:
+        if healthy is None and isinstance(health, dict):
             healthy = health.get("healthy")
 
         health_status = "healthy" if healthy else str(tool_result.get("status", "unknown"))
 
         azure = tool_result.get("azure") or {}
         status_result = azure.get("status_result") or {}
+
+        health_path = (
+            tool_result.get("health_path")
+            or status_result.get("health_path")
+            or fallback_arguments.get("health_path")
+            or fallback_state.get("health_path")
+        )
 
         return {
             "resource_group": (
@@ -1160,7 +1254,131 @@ class ConversationBrainAgent:
                 or fallback_state.get("latest_app_url")
             ),
             "health_status": health_status,
+            "health_path": health_path,
         }
+
+    def _status_result_is_healthy(
+        self,
+        tool_result: dict[str, Any],
+    ) -> bool:
+        if tool_result.get("healthy") is True:
+            return True
+
+        status = str(tool_result.get("status", "")).lower()
+
+        if status in {"healthy", "success", "completed"}:
+            return True
+
+        health = tool_result.get("health")
+
+        if isinstance(health, dict):
+            if health.get("healthy") is True:
+                return True
+
+            health_status = str(health.get("status", "")).lower()
+
+            if health_status in {"healthy", "success", "completed"}:
+                return True
+
+        return False
+
+    def _extract_health_path_from_project_dict(
+        self,
+        project: dict[str, Any],
+    ) -> str | None:
+        metadata = project.get("metadata_json") or {}
+        latest_analysis = metadata.get("latest_analysis")
+
+        return self._extract_health_path_from_analysis(latest_analysis)
+
+    def _extract_health_path_from_deployment_dict(
+        self,
+        deployment: dict[str, Any],
+    ) -> str | None:
+        metadata = deployment.get("metadata_json") or deployment.get("metadata") or {}
+        health_path = (
+            deployment.get("health_path")
+            or metadata.get("health_path")
+        )
+
+        if health_path:
+            return self._normalize_health_path(str(health_path))
+
+        return None
+
+    def _extract_health_path_from_tool_result(
+        self,
+        tool_result: dict[str, Any],
+    ) -> str | None:
+        health_path = tool_result.get("health_path") or tool_result.get("detected_health_path")
+
+        if health_path:
+            return self._normalize_health_path(str(health_path))
+
+        analysis = tool_result.get("analysis")
+
+        health_path = self._extract_health_path_from_analysis(analysis)
+
+        if health_path:
+            return health_path
+
+        result = tool_result.get("result")
+
+        if isinstance(result, dict):
+            health_path = result.get("health_path") or result.get("detected_health_path")
+
+            if health_path:
+                return self._normalize_health_path(str(health_path))
+
+        return None
+
+    def _extract_health_path_from_analysis(
+        self,
+        analysis: Any,
+    ) -> str | None:
+        if not isinstance(analysis, dict):
+            return None
+
+        primary_component = analysis.get("primary_component")
+
+        if isinstance(primary_component, dict):
+            health_path = primary_component.get("health_path")
+
+            if health_path:
+                return self._normalize_health_path(str(health_path))
+
+        health_path = analysis.get("health_path")
+
+        if health_path:
+            return self._normalize_health_path(str(health_path))
+
+        components = analysis.get("components")
+
+        if isinstance(components, list):
+            for component in components:
+                if not isinstance(component, dict):
+                    continue
+
+                health_path = component.get("health_path")
+
+                if health_path:
+                    return self._normalize_health_path(str(health_path))
+
+        return None
+
+    def _normalize_health_path(
+        self,
+        value: str,
+    ) -> str:
+        health_path = value.strip()
+
+        if not health_path:
+            return "/health"
+
+        if not health_path.startswith("/"):
+            health_path = "/" + health_path
+
+        return health_path
 
     def _tool_failed(self, tool_result: dict[str, Any]) -> bool:
         status = str(tool_result.get("status", "")).lower()
@@ -1253,7 +1471,7 @@ class ConversationBrainAgent:
                     if isinstance(item, str):
                         result.append(item)
                     elif isinstance(item, dict):
-                        path = item.get("path") or item.get("filename") or item.get("file") or item.get("name")
+                        path = item.get("relative_path") or item.get("path") or item.get("filename") or item.get("file") or item.get("name")
                         file_type = item.get("type")
 
                         if path and file_type:
@@ -1264,7 +1482,7 @@ class ConversationBrainAgent:
                             result.append(str(item))
 
             elif isinstance(value, dict):
-                path = value.get("path") or value.get("filename") or value.get("file") or value.get("name")
+                path = value.get("relative_path") or value.get("path") or value.get("filename") or value.get("file") or value.get("name")
                 file_type = value.get("type")
 
                 if path and file_type:
@@ -1359,6 +1577,7 @@ class ConversationBrainAgent:
         pr_url = self._extract_pull_request_url(message)
         resource_group = self._extract_resource_group(message)
         app_name = self._extract_app_name(message)
+        health_path = self._extract_health_path(message)
 
         if repo_url:
             entities["repo_url"] = repo_url
@@ -1374,6 +1593,9 @@ class ConversationBrainAgent:
 
         if app_name:
             entities["app_name"] = app_name
+
+        if health_path:
+            entities["health_path"] = health_path
 
         return entities
 
@@ -1434,9 +1656,11 @@ class ConversationBrainAgent:
         patterns = [
             r"app name\s+([A-Za-z0-9_.-]+)",
             r"app\s+([A-Za-z0-9_.-]+-backend)",
+            r"app\s+([A-Za-z0-9_.-]+-app)",
             r"container app\s+([A-Za-z0-9_.-]+)",
             r"app_name\s*[:=]\s*([A-Za-z0-9_.-]+)",
             r"[A-Za-z0-9_.-]+-backend",
+            r"[A-Za-z0-9_.-]+-app",
         ]
 
         for pattern in patterns:
@@ -1447,6 +1671,22 @@ class ConversationBrainAgent:
                     return match.group(1)
 
                 return match.group(0)
+
+        return None
+
+    def _extract_health_path(self, message: str) -> str | None:
+        patterns = [
+            r"health path\s+(/[A-Za-z0-9_./-]+)",
+            r"health_path\s*[:=]\s*(/[A-Za-z0-9_./-]+)",
+            r"endpoint\s+(/[A-Za-z0-9_./-]+)",
+            r"using\s+(/[A-Za-z0-9_./-]+)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, message, re.IGNORECASE)
+
+            if match:
+                return self._normalize_health_path(match.group(1))
 
         return None
 

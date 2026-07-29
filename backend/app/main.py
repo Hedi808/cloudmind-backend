@@ -11,6 +11,7 @@ from app.api.docker import router as docker_router
 from app.api.incident_response import router as incident_response_router
 from app.api.kubernetes import router as kubernetes_router
 from app.api.observability import router as observability_router
+from app.api.pipeline import router as pipeline_router
 from app.api.pr_validation import router as pr_validation_router
 from app.api.projects import router as projects_router
 from app.api.remediation import router as remediation_router
@@ -24,9 +25,10 @@ app = FastAPI(
         "CloudMind is a conversational multi-agent DevOps assistant that analyzes "
         "repositories, generates deployment assets, opens GitHub pull requests, "
         "deploys to Azure Container Apps, verifies runtime health, analyzes incidents, "
-        "stores project history in PostgreSQL, and plans dependency-aware workflows."
+        "stores project history in PostgreSQL, plans dependency-aware workflows, "
+        "and executes safe backend pipeline steps with human approval gates."
     ),
-    version="0.19.0",
+    version="0.20.0",
 )
 
 
@@ -49,8 +51,8 @@ def root():
     return {
         "status": "success",
         "message": "CloudMind API is running.",
-        "version": "0.19.0",
-        "phase": "phase_19_workflow_dependency_engine",
+        "version": "0.20.0",
+        "phase": "phase_20b_backend_pipeline_executor",
         "docs": "/docs",
     }
 
@@ -60,7 +62,7 @@ def health_check():
     return {
         "status": "healthy",
         "service": "cloudmind-backend",
-        "version": "0.19.0",
+        "version": "0.20.0",
     }
 
 
@@ -70,6 +72,7 @@ app.include_router(chat_router)
 # Other routers are kept with prefix="/api"
 app.include_router(projects_router, prefix="/api")
 app.include_router(workflows_router, prefix="/api")
+app.include_router(pipeline_router, prefix="/api")
 app.include_router(docker_router, prefix="/api")
 app.include_router(kubernetes_router, prefix="/api")
 app.include_router(deployment_router, prefix="/api")

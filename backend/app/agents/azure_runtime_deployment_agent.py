@@ -11,20 +11,22 @@ from urllib.parse import urlparse
 import requests
 
 from app.agents.repo_analyzer_agent import RepositoryAnalyzerAgent
+from app.core.config import settings
 
 
 class AzureRuntimeDeploymentAgent:
     """
-    Phase 16 agent.
+    Phase 16 / Phase 20D agent.
 
     Smart Azure runtime deployer.
 
     Behavior:
-    - If a reusable Azure Container Apps environment already exists in the target region,
-      reuse it and deploy only a new Container App.
-    - If no environment exists, create one.
-    - If Azure quota blocks creating a new environment, fall back to the existing one.
+    - Analyzes the repository.
+    - Derives app name, image name, target port, and health path automatically.
+    - Uses the same image naming convention as CICDAgent.
+    - Reuses an existing Azure Container Apps environment when Azure quota requires it.
     - Uses az rest / ARM API to avoid fragile Azure Container Apps CLI extension behavior.
+    - Deletes/recreates failed Container Apps automatically when retrying.
     """
 
     def __init__(self) -> None:
@@ -40,7 +42,7 @@ class AzureRuntimeDeploymentAgent:
         environment_name: str | None = None,
         azure_location: str = "francecentral",
         target_port: int | None = None,
-        health_path: str = "/health",
+        health_path: str | None = "/health",
         min_replicas: int = 0,
         max_replicas: int = 1,
         cpu: float = 0.25,
@@ -62,14 +64,29 @@ class AzureRuntimeDeploymentAgent:
             app_name=app_name,
             environment_name=environment_name,
             target_port=target_port,
+            health_path=health_path,
         )
 
         preferred_resource_group = derived["resource_group"]
         preferred_app_name = derived["app_name"]
         preferred_environment_name = derived["environment_name"]
         preferred_workspace_name = derived["workspace_name"]
+
         image = derived["image"]
         target_port = derived["target_port"]
+        health_path = derived["health_path"]
+
+        image_resolution = derived["image_resolution"]
+
+        if image_resolution.get("definitive_missing"):
+            raise RuntimeError(
+                "CloudMind could not deploy because the expected container image "
+                "does not exist in the registry yet. "
+                f"Selected image: {image}. "
+                f"Checked candidates: {image_resolution.get('candidates')}. "
+                "Merge the Docker and CI/CD pull requests first, then wait for GitHub Actions "
+                "to publish the image to GHCR."
+            )
 
         self._register_provider("Microsoft.App")
         self._register_provider("Microsoft.OperationalInsights")
@@ -153,6 +170,12 @@ class AzureRuntimeDeploymentAgent:
 
         app_name = preferred_app_name
 
+        predeployment_cleanup = self._delete_failed_container_app_if_needed(
+            subscription_id=subscription_id,
+            resource_group=resource_group,
+            app_name=app_name,
+        )
+
         container_app = self._create_or_update_container_app(
             subscription_id=subscription_id,
             resource_group=resource_group,
@@ -198,6 +221,7 @@ class AzureRuntimeDeploymentAgent:
             "repo_url": repo_url,
             "repo_name": analysis.get("repo_name"),
             "image": image,
+            "image_resolution": image_resolution,
             "resource_group": resource_group,
             "app_name": app_name,
             "environment_name": environment_name,
@@ -209,12 +233,16 @@ class AzureRuntimeDeploymentAgent:
             "health_path": health_path,
             "app_url": app_url,
             "health": health_result,
+            "predeployment_cleanup": predeployment_cleanup,
             "elapsed_seconds": elapsed_seconds,
             "analysis": {
                 "repo_name": analysis.get("repo_name"),
                 "project_type": analysis.get("project_type"),
+                "detected_language": analysis.get("detected_language"),
+                "detected_framework": analysis.get("detected_framework"),
                 "detected_languages": analysis.get("detected_languages", []),
                 "detected_frameworks": analysis.get("detected_frameworks", []),
+                "primary_component": analysis.get("primary_component"),
                 "components": analysis.get("components", []),
             },
             "azure": {
@@ -554,6 +582,126 @@ class AzureRuntimeDeploymentAgent:
             f"Last result: {last_result}"
         )
 
+    def _delete_failed_container_app_if_needed(
+        self,
+        subscription_id: str,
+        resource_group: str,
+        app_name: str,
+    ) -> dict[str, Any]:
+        existing_app = self._get_container_app_or_none(
+            subscription_id=subscription_id,
+            resource_group=resource_group,
+            app_name=app_name,
+        )
+
+        if not existing_app:
+            return {
+                "deleted_failed_app": False,
+                "reason": "No existing Container App with the same name.",
+            }
+
+        provisioning_state = self._nested_get(
+            existing_app,
+            ["properties", "provisioningState"],
+        )
+
+        if provisioning_state not in ["Failed", "Canceled"]:
+            return {
+                "deleted_failed_app": False,
+                "reason": f"Existing Container App state is {provisioning_state}.",
+            }
+
+        self._delete_container_app(
+            subscription_id=subscription_id,
+            resource_group=resource_group,
+            app_name=app_name,
+        )
+
+        self._wait_for_container_app_deleted(
+            subscription_id=subscription_id,
+            resource_group=resource_group,
+            app_name=app_name,
+            timeout_seconds=300,
+        )
+
+        return {
+            "deleted_failed_app": True,
+            "reason": f"Existing Container App was {provisioning_state}, so CloudMind deleted it before retrying.",
+        }
+
+    def _get_container_app_or_none(
+        self,
+        subscription_id: str,
+        resource_group: str,
+        app_name: str,
+    ) -> dict[str, Any] | None:
+        url = (
+            f"https://management.azure.com/subscriptions/{subscription_id}"
+            f"/resourceGroups/{resource_group}"
+            f"/providers/Microsoft.App/containerApps/{app_name}"
+            f"?api-version=2025-01-01"
+        )
+
+        try:
+            return self._az_rest(
+                method="get",
+                url=url,
+                body=None,
+                timeout_seconds=120,
+            )
+        except RuntimeError as exc:
+            message = str(exc).lower()
+
+            if "404" in message or "notfound" in message or "not found" in message:
+                return None
+
+            raise
+
+    def _delete_container_app(
+        self,
+        subscription_id: str,
+        resource_group: str,
+        app_name: str,
+    ) -> None:
+        url = (
+            f"https://management.azure.com/subscriptions/{subscription_id}"
+            f"/resourceGroups/{resource_group}"
+            f"/providers/Microsoft.App/containerApps/{app_name}"
+            f"?api-version=2025-01-01"
+        )
+
+        self._az_rest(
+            method="delete",
+            url=url,
+            body=None,
+            timeout_seconds=180,
+        )
+
+    def _wait_for_container_app_deleted(
+        self,
+        subscription_id: str,
+        resource_group: str,
+        app_name: str,
+        timeout_seconds: int,
+    ) -> None:
+        deadline = time.time() + timeout_seconds
+
+        while time.time() < deadline:
+            existing = self._get_container_app_or_none(
+                subscription_id=subscription_id,
+                resource_group=resource_group,
+                app_name=app_name,
+            )
+
+            if not existing:
+                return
+
+            time.sleep(10)
+
+        raise TimeoutError(
+            f"Timed out waiting for failed Container App {app_name} to be deleted."
+        )
+
     def _create_or_update_container_app(
         self,
         subscription_id: str,
@@ -575,24 +723,40 @@ class AzureRuntimeDeploymentAgent:
             f"?api-version=2025-01-01"
         )
 
+        configuration: dict[str, Any] = {
+            "activeRevisionsMode": "Single",
+            "ingress": {
+                "external": True,
+                "targetPort": target_port,
+                "transport": "auto",
+                "allowInsecure": False,
+            },
+        }
+
+        registry_configuration = self._registry_configuration_for_image(image)
+
+        if registry_configuration.get("secrets"):
+            configuration["secrets"] = registry_configuration["secrets"]
+
+        if registry_configuration.get("registries"):
+            configuration["registries"] = registry_configuration["registries"]
+
         body = {
             "location": azure_location,
             "properties": {
                 "managedEnvironmentId": environment_id,
-                "configuration": {
-                    "activeRevisionsMode": "Single",
-                    "ingress": {
-                        "external": True,
-                        "targetPort": target_port,
-                        "transport": "auto",
-                        "allowInsecure": False,
-                    },
-                },
+                "configuration": configuration,
                 "template": {
                     "containers": [
                         {
                             "name": self._sanitize_container_name(app_name),
                             "image": image,
+                            "env": [
+                                {
+                                    "name": "PORT",
+                                    "value": str(target_port),
+                                }
+                            ],
                             "resources": {
                                 "cpu": cpu,
                                 "memory": memory,
@@ -613,6 +777,48 @@ class AzureRuntimeDeploymentAgent:
             body=body,
             timeout_seconds=300,
         )
+
+    def _registry_configuration_for_image(
+        self,
+        image: str,
+    ) -> dict[str, Any]:
+        parsed = self._parse_container_image(image)
+
+        if parsed.get("registry") != "ghcr.io":
+            return {
+                "secrets": [],
+                "registries": [],
+                "reason": "No registry credentials configured for non-GHCR image.",
+            }
+
+        github_token = getattr(settings, "github_token", None)
+        github_username = getattr(settings, "github_username", None)
+
+        if not github_token:
+            return {
+                "secrets": [],
+                "registries": [],
+                "reason": "No GitHub token configured. Assuming GHCR image is public.",
+            }
+
+        username = github_username or parsed.get("owner") or "cloudmind"
+
+        return {
+            "secrets": [
+                {
+                    "name": "ghcr-token",
+                    "value": github_token,
+                }
+            ],
+            "registries": [
+                {
+                    "server": "ghcr.io",
+                    "username": username,
+                    "passwordSecretRef": "ghcr-token",
+                }
+            ],
+            "reason": "GHCR registry credentials configured from backend GitHub token.",
+        }
 
     def _wait_for_container_app(
         self,
@@ -650,8 +856,11 @@ class AzureRuntimeDeploymentAgent:
                 return last_result
 
             if provisioning_state in ["Failed", "Canceled"]:
+                failure_summary = self._summarize_container_app_failure(last_result)
+
                 raise RuntimeError(
-                    f"Container App provisioning failed: {provisioning_state}"
+                    f"Container App provisioning failed: {provisioning_state}. "
+                    f"Details: {json.dumps(failure_summary, ensure_ascii=False)}"
                 )
 
             time.sleep(10)
@@ -660,6 +869,40 @@ class AzureRuntimeDeploymentAgent:
             f"Timed out waiting for Container App {app_name}. "
             f"Last result: {last_result}"
         )
+
+    def _summarize_container_app_failure(
+        self,
+        container_app: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "id": container_app.get("id"),
+            "name": container_app.get("name"),
+            "provisioning_state": self._nested_get(
+                container_app,
+                ["properties", "provisioningState"],
+            ),
+            "running_status": self._nested_get(
+                container_app,
+                ["properties", "runningStatus"],
+            ),
+            "latest_revision": self._nested_get(
+                container_app,
+                ["properties", "latestRevisionName"],
+            ),
+            "latest_ready_revision": self._nested_get(
+                container_app,
+                ["properties", "latestReadyRevisionName"],
+            ),
+            "image": self._nested_get(
+                container_app,
+                ["properties", "template", "containers", 0, "image"],
+            ),
+            "target_port": self._nested_get(
+                container_app,
+                ["properties", "configuration", "ingress", "targetPort"],
+            ),
+            "fqdn": self._extract_fqdn(container_app),
+        }
 
     def _check_health(
         self,
@@ -719,67 +962,541 @@ class AzureRuntimeDeploymentAgent:
         app_name: str | None,
         environment_name: str | None,
         target_port: int | None,
+        health_path: str | None,
     ) -> dict[str, Any]:
         owner = self._github_owner(repo_url)
         repo_name = analysis.get("repo_name") or self._repo_name(repo_url)
-        repo_slug = self._sanitize_azure_name(repo_name, max_length=24)
+        repo_slug = self._normalize_name(repo_name)
 
-        component = self._first_component(analysis)
+        azure_repo_slug = self._sanitize_azure_name(repo_slug, max_length=24)
+
+        deployable_components = self._select_deployable_components(analysis)
+        component = self._first_component(analysis, deployable_components)
+
         component_name = self._normalize_name(
             component.get("name") or component.get("type") or "backend"
         )
 
         derived_app_name = self._sanitize_azure_name(
-            app_name or f"{repo_slug}-{component_name}",
+            app_name or f"{azure_repo_slug}-{component_name}",
             max_length=32,
         )
 
         derived_resource_group = self._sanitize_azure_name(
-            resource_group or f"rg-cloudmind-{repo_slug}",
+            resource_group or f"rg-cloudmind-{azure_repo_slug}",
             max_length=60,
         )
 
         derived_environment_name = self._sanitize_azure_name(
-            environment_name or f"cae-cloudmind-{repo_slug}",
+            environment_name or f"cae-cloudmind-{azure_repo_slug}",
             max_length=60,
         )
 
         workspace_name = self._sanitize_azure_name(
-            f"log-cloudmind-{repo_slug}",
+            f"log-cloudmind-{azure_repo_slug}",
             max_length=60,
         )
 
-        derived_image = image or (
-            f"ghcr.io/{owner.lower()}/{repo_slug}-{component_name}:latest"
+        image_resolution = self._resolve_container_image(
+            explicit_image=image,
+            owner=owner,
+            repo_slug=repo_slug,
+            component=component,
+            components=deployable_components,
         )
 
-        derived_target_port = target_port or int(component.get("port") or 8000)
+        derived_image = image_resolution["selected_image"]
+        derived_target_port = int(target_port or component.get("port") or 8000)
+        derived_health_path = self._derive_health_path(
+            requested_health_path=health_path,
+            component=component,
+            analysis=analysis,
+        )
 
         return {
             "owner": owner,
             "repo_slug": repo_slug,
             "component_name": component_name,
             "image": derived_image,
+            "image_resolution": image_resolution,
             "resource_group": derived_resource_group,
             "app_name": derived_app_name,
             "environment_name": derived_environment_name,
             "workspace_name": workspace_name,
             "target_port": derived_target_port,
+            "health_path": derived_health_path,
         }
+
+    def _select_deployable_components(
+        self,
+        analysis: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        components = analysis.get("components", []) or []
+        primary_component = analysis.get("primary_component")
+
+        if primary_component and isinstance(primary_component, dict):
+            primary_type = primary_component.get("type")
+
+            if primary_type in {"fullstack", "backend", "frontend"}:
+                if primary_type == "fullstack":
+                    return [primary_component]
+
+        deployable: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+
+            component_type = component.get("type")
+
+            if component_type not in {"fullstack", "backend", "frontend"}:
+                continue
+
+            if self._is_nested_static_component(component, components):
+                continue
+
+            key = self._component_identity(component)
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            deployable.append(component)
+
+        if primary_component and isinstance(primary_component, dict):
+            key = self._component_identity(primary_component)
+
+            if key not in seen and primary_component.get("type") in {"fullstack", "backend", "frontend"}:
+                deployable.insert(0, primary_component)
+
+        return sorted(
+            deployable,
+            key=lambda item: (
+                self._component_priority(item),
+                int(item.get("confidence") or 0),
+            ),
+            reverse=True,
+        )
 
     def _first_component(
         self,
         analysis: dict[str, Any],
+        deployable_components: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        primary_component = analysis.get("primary_component")
+
+        if isinstance(primary_component, dict) and primary_component:
+            return primary_component
+
+        if deployable_components:
+            return deployable_components[0]
+
         components = analysis.get("components", [])
 
         if components and isinstance(components[0], dict):
             return components[0]
 
         return {
+            "name": "app",
             "type": "backend",
-            "port": 8000,
+            "port": analysis.get("port") or 8000,
+            "health_path": analysis.get("health_path") or "/health",
         }
+
+    def _resolve_container_image(
+        self,
+        explicit_image: str | None,
+        owner: str,
+        repo_slug: str,
+        component: dict[str, Any],
+        components: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if explicit_image:
+            check = self._check_container_image_access(explicit_image)
+
+            return {
+                "selected_image": explicit_image,
+                "source": "explicit_user_or_context_image",
+                "candidates": [explicit_image],
+                "checks": [check],
+                "definitive_missing": check.get("definitive_missing", False),
+            }
+
+        candidates = self._build_image_candidates(
+            owner=owner,
+            repo_slug=repo_slug,
+            component=component,
+            components=components,
+        )
+
+        checks = []
+
+        for candidate in candidates:
+            check = self._check_container_image_access(candidate)
+            checks.append(check)
+
+            if check.get("accessible"):
+                return {
+                    "selected_image": candidate,
+                    "source": "registry_accessible_candidate",
+                    "candidates": candidates,
+                    "checks": checks,
+                    "definitive_missing": False,
+                }
+
+        all_definitely_missing = bool(checks) and all(
+            check.get("definitive_missing") for check in checks
+        )
+
+        return {
+            "selected_image": candidates[0],
+            "source": "first_candidate_fallback",
+            "candidates": candidates,
+            "checks": checks,
+            "definitive_missing": all_definitely_missing,
+        }
+
+    def _build_image_candidates(
+        self,
+        owner: str,
+        repo_slug: str,
+        component: dict[str, Any],
+        components: list[dict[str, Any]],
+    ) -> list[str]:
+        owner = owner.lower()
+        repo_slug = self._normalize_name(repo_slug)
+        component_name = self._normalize_name(
+            component.get("name") or component.get("type") or "app"
+        )
+        component_type = self._normalize_name(component.get("type") or "app")
+
+        candidates: list[str] = []
+
+        if len(components) <= 1:
+            candidates.append(f"ghcr.io/{owner}/{repo_slug}:latest")
+            candidates.append(f"ghcr.io/{owner}/{repo_slug}-{component_name}:latest")
+
+            if component_type != component_name:
+                candidates.append(f"ghcr.io/{owner}/{repo_slug}-{component_type}:latest")
+
+            candidates.append(f"ghcr.io/{owner}/{repo_slug}-backend:latest")
+            candidates.append(f"ghcr.io/{owner}/{repo_slug}-app:latest")
+        else:
+            candidates.append(f"ghcr.io/{owner}/{repo_slug}-{component_name}:latest")
+            candidates.append(f"ghcr.io/{owner}/{repo_slug}-{component_type}:latest")
+            candidates.append(f"ghcr.io/{owner}/{repo_slug}:latest")
+
+        return list(dict.fromkeys(candidates))
+
+    def _check_container_image_access(
+        self,
+        image: str,
+    ) -> dict[str, Any]:
+        parsed = self._parse_container_image(image)
+
+        if parsed.get("registry") != "ghcr.io":
+            return {
+                "image": image,
+                "checked": False,
+                "accessible": False,
+                "definitive_missing": False,
+                "reason": "Only GHCR images are checked automatically for now.",
+            }
+
+        repository = parsed["repository"]
+        reference = parsed["reference"]
+
+        manifest_url = f"https://ghcr.io/v2/{repository}/manifests/{reference}"
+
+        headers = {
+            "Accept": (
+                "application/vnd.oci.image.index.v1+json,"
+                "application/vnd.oci.image.manifest.v1+json,"
+                "application/vnd.docker.distribution.manifest.v2+json"
+            )
+        }
+
+        try:
+            response = requests.head(manifest_url, headers=headers, timeout=15)
+
+            if response.status_code == 405:
+                response = requests.get(manifest_url, headers=headers, timeout=15)
+
+            if response.status_code == 200:
+                return {
+                    "image": image,
+                    "checked": True,
+                    "accessible": True,
+                    "definitive_missing": False,
+                    "status_code": response.status_code,
+                    "reason": "Registry manifest is accessible.",
+                }
+
+            if response.status_code == 401:
+                token = self._get_ghcr_bearer_token(
+                    www_authenticate=response.headers.get("WWW-Authenticate", ""),
+                    repository=repository,
+                )
+
+                if token:
+                    auth_headers = dict(headers)
+                    auth_headers["Authorization"] = f"Bearer {token}"
+
+                    retry = requests.head(
+                        manifest_url,
+                        headers=auth_headers,
+                        timeout=15,
+                    )
+
+                    if retry.status_code == 405:
+                        retry = requests.get(
+                            manifest_url,
+                            headers=auth_headers,
+                            timeout=15,
+                        )
+
+                    if retry.status_code == 200:
+                        return {
+                            "image": image,
+                            "checked": True,
+                            "accessible": True,
+                            "definitive_missing": False,
+                            "status_code": retry.status_code,
+                            "reason": "Registry manifest is accessible after token request.",
+                        }
+
+                    if retry.status_code == 404:
+                        return {
+                            "image": image,
+                            "checked": True,
+                            "accessible": False,
+                            "definitive_missing": True,
+                            "status_code": retry.status_code,
+                            "reason": "Registry manifest was not found.",
+                        }
+
+                    return {
+                        "image": image,
+                        "checked": True,
+                        "accessible": False,
+                        "definitive_missing": False,
+                        "status_code": retry.status_code,
+                        "reason": retry.text[:300],
+                    }
+
+            if response.status_code == 404:
+                return {
+                    "image": image,
+                    "checked": True,
+                    "accessible": False,
+                    "definitive_missing": True,
+                    "status_code": response.status_code,
+                    "reason": "Registry manifest was not found.",
+                }
+
+            return {
+                "image": image,
+                "checked": True,
+                "accessible": False,
+                "definitive_missing": False,
+                "status_code": response.status_code,
+                "reason": response.text[:300],
+            }
+
+        except Exception as exc:
+            return {
+                "image": image,
+                "checked": False,
+                "accessible": False,
+                "definitive_missing": False,
+                "reason": f"Registry check failed but deployment can still continue: {exc}",
+            }
+
+    def _get_ghcr_bearer_token(
+        self,
+        www_authenticate: str,
+        repository: str,
+    ) -> str | None:
+        attributes = dict(re.findall(r'(\w+)="([^"]+)"', www_authenticate))
+
+        realm = attributes.get("realm") or "https://ghcr.io/token"
+        service = attributes.get("service") or "ghcr.io"
+        scope = attributes.get("scope") or f"repository:{repository}:pull"
+
+        params = {
+            "service": service,
+            "scope": scope,
+        }
+
+        headers = {}
+
+        github_token = getattr(settings, "github_token", None)
+
+        if github_token:
+            headers["Authorization"] = f"Bearer {github_token}"
+
+        try:
+            response = requests.get(
+                realm,
+                params=params,
+                headers=headers,
+                timeout=15,
+            )
+
+            if response.status_code != 200 and github_token:
+                username = getattr(settings, "github_username", None) or "x-access-token"
+
+                response = requests.get(
+                    realm,
+                    params=params,
+                    auth=(username, github_token),
+                    timeout=15,
+                )
+
+            if response.status_code != 200:
+                return None
+
+            data = response.json()
+
+            return data.get("token")
+
+        except Exception:
+            return None
+
+    def _parse_container_image(
+        self,
+        image: str,
+    ) -> dict[str, Any]:
+        clean = image.strip()
+        registry = ""
+        remainder = clean
+        reference = "latest"
+
+        if "/" in clean and "." in clean.split("/")[0]:
+            registry, remainder = clean.split("/", 1)
+
+        if ":" in remainder:
+            repository, reference = remainder.rsplit(":", 1)
+        else:
+            repository = remainder
+
+        parts = repository.split("/")
+
+        return {
+            "image": image,
+            "registry": registry,
+            "repository": repository,
+            "reference": reference,
+            "owner": parts[0] if parts else None,
+            "name": parts[-1] if parts else repository,
+        }
+
+    def _derive_health_path(
+        self,
+        requested_health_path: str | None,
+        component: dict[str, Any],
+        analysis: dict[str, Any],
+    ) -> str:
+        component_health_path = component.get("health_path")
+        analysis_health_path = analysis.get("health_path")
+
+        if requested_health_path and requested_health_path not in {"/health", "health"}:
+            return self._normalize_health_path(requested_health_path)
+
+        if component_health_path:
+            return self._normalize_health_path(str(component_health_path))
+
+        if analysis_health_path:
+            return self._normalize_health_path(str(analysis_health_path))
+
+        return self._normalize_health_path(requested_health_path or "/health")
+
+    def _normalize_health_path(
+        self,
+        value: str,
+    ) -> str:
+        value = value.strip()
+
+        if not value:
+            return "/health"
+
+        if not value.startswith("/"):
+            value = "/" + value
+
+        return value
+
+    def _is_nested_static_component(
+        self,
+        component: dict[str, Any],
+        components: list[dict[str, Any]],
+    ) -> bool:
+        component_type = component.get("type")
+        framework = (component.get("framework") or "").lower()
+
+        if component_type != "frontend":
+            return False
+
+        if "static" not in framework:
+            return False
+
+        if component.get("package_file"):
+            return False
+
+        component_path = str(component.get("component_path") or ".").strip("/")
+
+        if component_path in {"", "."}:
+            return False
+
+        for parent in components:
+            if parent is component:
+                continue
+
+            if not isinstance(parent, dict):
+                continue
+
+            if not parent.get("package_file"):
+                continue
+
+            parent_path = str(parent.get("component_path") or ".").strip("/")
+
+            if parent_path in {"", "."}:
+                return True
+
+            if component_path.startswith(parent_path + "/"):
+                return True
+
+        return False
+
+    def _component_priority(
+        self,
+        component: dict[str, Any],
+    ) -> int:
+        component_type = component.get("type")
+
+        if component_type == "fullstack":
+            return 4
+
+        if component_type == "backend":
+            return 3
+
+        if component_type == "frontend":
+            return 2
+
+        return 1
+
+    def _component_identity(
+        self,
+        component: dict[str, Any],
+    ) -> str:
+        return "|".join(
+            [
+                str(component.get("name") or ""),
+                str(component.get("type") or ""),
+                str(component.get("component_path") or ""),
+                str(component.get("package_file") or ""),
+            ]
+        )
 
     def _extract_fqdn(
         self,
@@ -935,16 +1652,24 @@ class AzureRuntimeDeploymentAgent:
 
     def _nested_get(
         self,
-        source: dict[str, Any],
-        keys: list[str],
+        source: Any,
+        keys: list[Any],
     ) -> Any:
         current: Any = source
 
         for key in keys:
-            if not isinstance(current, dict):
+            if isinstance(current, dict):
+                current = current.get(key)
+                continue
+
+            if isinstance(current, list) and isinstance(key, int):
+                if 0 <= key < len(current):
+                    current = current[key]
+                    continue
+
                 return None
 
-            current = current.get(key)
+            return None
 
         return current
 

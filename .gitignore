@@ -1,9 +1,8 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-.Python
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -14,7 +13,7 @@ venv/
 env/
 backend/.venv/
 
-# Environment secrets
+# Secrets / env
 .env
 .env.*
 !.env.example
@@ -22,22 +21,6 @@ backend/.env
 backend/.env.*
 frontend/.env
 frontend/.env.*
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-logs/
-
-# Azure / local auth
-.azure/
-.azure-*/
 
 # Node / frontend
 node_modules/
@@ -47,18 +30,22 @@ frontend/dist/
 build/
 frontend/build/
 
+# Logs
+*.log
+logs/
+
 # Local databases
 *.db
 *.sqlite
 *.sqlite3
-cloudmind.db
 
-# Temporary files
-tmp/
-temp/
-*.tmp
+# Docker / local volumes
+postgres_data/
+cloudmind_postgres_data/
 
-# Local cloned/analyzed repositories
+# Local cloned repositories / generated workspace
+workspace/
+backend/workspace/
 local_repos/
 cloned_repositories/
 repositories/
@@ -66,5 +53,19 @@ backend/local_repos/
 backend/cloned_repositories/
 backend/repositories/
 
-# Generated cache
-.cache/
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+tmp/
+temp/
+*.tmp
+
+# Azure local auth/cache
+.azure/
+.azure-*/

@@ -13,6 +13,13 @@ class CICDAgent:
     - generate GitHub Actions workflow for Docker image build
     - push Docker image to GitHub Container Registry
     - keep workflow cloud-neutral for future Azure / OCI deployment
+
+    Phase 20D improvements:
+    - uses primary_component/component_path from smart analyzer
+    - avoids workspace/repos path assumptions
+    - supports root fullstack Node apps
+    - generates repository-relative Docker contexts
+    - includes relative_path for Remote GitOps publishing
     """
 
     def __init__(self):
@@ -49,7 +56,7 @@ class CICDAgent:
         workflow_name: str = "docker-build.yml",
     ) -> dict[str, Any]:
         repo_path = Path(analysis["metadata"]["local_path"])
-        components = analysis.get("components", [])
+        components = self._select_deployable_components(analysis)
 
         if not components:
             return {
@@ -58,9 +65,11 @@ class CICDAgent:
                 "analysis": analysis,
                 "generated_files": [],
                 "skipped_files": [],
+                "existing_files": [],
                 "recommendations": [
                     "Add standard dependency files such as package.json, requirements.txt, or pyproject.toml.",
-                    "Run repository analysis again before generating CI/CD workflow.",
+                    "Make sure repository analysis returns at least one deployable component with component_path or package_file.",
+                    "Generate Docker files before generating CI/CD.",
                 ],
             }
 
@@ -83,12 +92,14 @@ class CICDAgent:
                 "skipped_files": [
                     {
                         "path": str(workflow_path),
+                        "relative_path": self._relative_path(repo_path, workflow_path),
                         "reason": "Workflow already exists. Use overwrite=true to replace it.",
                     }
                 ],
                 "existing_files": [
                     {
                         "path": str(workflow_path),
+                        "relative_path": self._relative_path(repo_path, workflow_path),
                         "type": "github_actions_workflow",
                     }
                 ],
@@ -115,14 +126,59 @@ class CICDAgent:
             "generated_files": [
                 {
                     "path": str(workflow_path),
+                    "relative_path": self._relative_path(repo_path, workflow_path),
                     "type": "github_actions_workflow",
                 }
             ],
             "skipped_files": [],
             "existing_files": [],
             "analysis": analysis,
-            "next_step": "After reviewing the workflow, GitAgent can push it to a CloudMind branch and open a pull request.",
+            "next_step": "After reviewing the workflow, GitAgent can publish it to a CloudMind branch and open a pull request through Remote GitOps Mode.",
         }
+
+    def _select_deployable_components(self, analysis: dict[str, Any]) -> list[dict[str, Any]]:
+        components = analysis.get("components", []) or []
+        primary_component = analysis.get("primary_component")
+
+        if primary_component:
+            primary_type = primary_component.get("type")
+            primary_path = str(primary_component.get("component_path") or ".").strip("/")
+
+            if primary_type in {"fullstack", "backend", "frontend"}:
+                if primary_type == "fullstack":
+                    return [primary_component]
+
+                if primary_path in {"", "."}:
+                    return [primary_component]
+
+        deployable: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for component in components:
+            component_type = component.get("type")
+
+            if component_type not in {"fullstack", "backend", "frontend"}:
+                continue
+
+            if self._is_nested_static_component(component=component, components=components):
+                continue
+
+            key = self._component_identity(component)
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            deployable.append(component)
+
+        return sorted(
+            deployable,
+            key=lambda component: (
+                self._component_priority(component),
+                int(component.get("confidence") or 0),
+            ),
+            reverse=True,
+        )
 
     def _generate_docker_build_workflow(
         self,
@@ -135,14 +191,24 @@ class CICDAgent:
         jobs = []
 
         for component in components:
-            component_name = self._normalize_name(component.get("name") or component.get("type") or "app")
+            component_name = self._normalize_name(
+                component.get("name") or component.get("type") or "app"
+            )
             docker_context = self._component_context(component)
-            image_name = f"{image_registry}/{image_owner}/{repo_name}-{component_name}"
+            dockerfile_path = self._dockerfile_path(docker_context)
+            image_name = self._image_name(
+                image_registry=image_registry,
+                image_owner=image_owner,
+                repo_name=repo_name,
+                component_name=component_name,
+                components=components,
+            )
 
             jobs.append(
                 self._generate_component_job(
                     component_name=component_name,
                     docker_context=docker_context,
+                    dockerfile_path=dockerfile_path,
                     image_name=image_name,
                     image_tag=image_tag,
                 )
@@ -174,6 +240,7 @@ jobs:
         self,
         component_name: str,
         docker_context: str,
+        dockerfile_path: str,
         image_name: str,
         image_tag: str,
     ) -> str:
@@ -212,7 +279,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: {docker_context}
-          file: {docker_context}/Dockerfile
+          file: {dockerfile_path}
           push: false
           tags: {image_name}:pr-check
 
@@ -221,33 +288,150 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: {docker_context}
-          file: {docker_context}/Dockerfile
+          file: {dockerfile_path}
           push: true
           tags: ${{{{ steps.meta.outputs.tags }}}}
-          labels: ${{{{ steps.meta.outputs.labels }}}}"""
+          labels: ${{{{ steps.meta.outputs.labels }}}}
+"""
 
     def _component_context(self, component: dict[str, Any]) -> str:
-        package_file = component.get("package_file")
+        """
+        Returns Docker build context as a GitHub Actions repository-relative path.
 
-        if not package_file:
-            return "."
+        Examples:
+        - root app: "."
+        - backend/package.json: "./backend"
+        - services/api/package.json: "./services/api"
+        """
+        component_path = component.get("component_path")
 
-        component_dir = Path(package_file).parent
+        if component_path:
+            normalized = self._normalize_repo_path(str(component_path))
 
-        # In generated analysis, package_file is inside workspace/repos/<repo-name>/...
-        # For GitHub Actions, paths must be relative to the repository root.
-        parts = component_dir.parts
-
-        if "workspace" in parts and "repos" in parts:
-            repos_index = parts.index("repos")
-            relative_parts = parts[repos_index + 2 :]
-
-            if not relative_parts:
+            if normalized in {"", "."}:
                 return "."
 
-            return "./" + "/".join(relative_parts)
+            return f"./{normalized}"
+
+        package_file = component.get("package_file")
+
+        if package_file:
+            package_path = self._normalize_repo_path(str(package_file))
+            parent = str(Path(package_path).parent).replace("\\", "/")
+
+            if parent in {"", "."}:
+                return "."
+
+            return f"./{parent}"
 
         return "."
+
+    def _dockerfile_path(self, docker_context: str) -> str:
+        if docker_context in {"", "."}:
+            return "./Dockerfile"
+
+        return f"{docker_context.rstrip('/')}/Dockerfile"
+
+    def _image_name(
+        self,
+        image_registry: str,
+        image_owner: str,
+        repo_name: str,
+        component_name: str,
+        components: list[dict[str, Any]],
+    ) -> str:
+        clean_repo_name = self._normalize_name(repo_name)
+
+        if len(components) == 1:
+            return f"{image_registry}/{image_owner}/{clean_repo_name}"
+
+        return f"{image_registry}/{image_owner}/{clean_repo_name}-{component_name}"
+
+    def _is_nested_static_component(
+        self,
+        component: dict[str, Any],
+        components: list[dict[str, Any]],
+    ) -> bool:
+        component_type = component.get("type")
+        framework = (component.get("framework") or "").lower()
+
+        if component_type != "frontend":
+            return False
+
+        if "static" not in framework:
+            return False
+
+        if component.get("package_file"):
+            return False
+
+        component_path = str(component.get("component_path") or ".").strip("/")
+
+        if component_path in {"", "."}:
+            return False
+
+        for parent in components:
+            if parent is component:
+                continue
+
+            if not parent.get("package_file"):
+                continue
+
+            parent_path = str(parent.get("component_path") or ".").strip("/")
+
+            if parent_path in {"", "."}:
+                return True
+
+            if component_path.startswith(parent_path + "/"):
+                return True
+
+        return False
+
+    def _component_priority(self, component: dict[str, Any]) -> int:
+        component_type = component.get("type")
+
+        if component_type == "fullstack":
+            return 4
+
+        if component_type == "backend":
+            return 3
+
+        if component_type == "frontend":
+            return 2
+
+        return 1
+
+    def _component_identity(self, component: dict[str, Any]) -> str:
+        return "|".join(
+            [
+                str(component.get("name") or ""),
+                str(component.get("type") or ""),
+                str(component.get("component_path") or ""),
+                str(component.get("package_file") or ""),
+            ]
+        )
+
+    def _normalize_repo_path(self, path: str) -> str:
+        normalized = path.replace("\\", "/").strip()
+
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+
+        normalized = normalized.strip("/")
+
+        if not normalized:
+            return "."
+
+        if ".." in Path(normalized).parts:
+            raise ValueError(f"Unsafe repository path: {path}")
+
+        return normalized
+
+    def _relative_path(self, repo_path: Path, path: Path) -> str:
+        try:
+            relative = path.relative_to(repo_path)
+            return relative.as_posix() or "."
+        except ValueError:
+            return path.as_posix()
 
     def _normalize_name(self, name: str) -> str:
         name = name.lower().strip()
