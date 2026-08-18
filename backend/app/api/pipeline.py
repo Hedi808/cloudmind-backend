@@ -57,13 +57,17 @@ def preview_pipeline(request: PipelineRunRequest):
 def run_next_pipeline_step(request: PipelineRunRequest):
     pipeline_executor = get_pipeline_executor()
 
-    return pipeline_executor.run_next_step(
+    return pipeline_executor.run_or_resume_pipeline(
+        run_id=request.run_id,
         project_id=request.project_id,
         repo_url=request.repo_url,
         resource_group=request.resource_group,
         app_name=request.app_name,
+        app_url=request.app_url,
+        health_path=request.health_path,
         pull_request_url=request.pull_request_url,
         approval_confirmed=request.approval_confirmed,
+        max_steps=1,
         dry_run=request.dry_run,
         run_optional=request.run_optional,
         run_optional_reporting=request.run_optional_reporting,
@@ -77,11 +81,14 @@ def run_next_pipeline_step(request: PipelineRunRequest):
 def run_pipeline(request: PipelineRunRequest):
     pipeline_executor = get_pipeline_executor()
 
-    return pipeline_executor.run_pipeline(
+    return pipeline_executor.run_or_resume_pipeline(
+        run_id=request.run_id,
         project_id=request.project_id,
         repo_url=request.repo_url,
         resource_group=request.resource_group,
         app_name=request.app_name,
+        app_url=request.app_url,
+        health_path=request.health_path,
         pull_request_url=request.pull_request_url,
         approval_confirmed=request.approval_confirmed,
         max_steps=request.max_steps,
@@ -93,3 +100,34 @@ def run_pipeline(request: PipelineRunRequest):
         publish_to_github=request.publish_to_github,
         session_id=request.session_id,
     )
+
+
+@router.get("/runs/{run_id}")
+def get_pipeline_run(run_id: str):
+    pipeline_executor = get_pipeline_executor()
+    run = pipeline_executor.get_pipeline_run(run_id)
+
+    if run is None:
+        return {
+            "status": "pipeline_run_not_found",
+            "message": f"Pipeline run was not found: {run_id}",
+            "pipeline_run": None,
+        }
+
+    return {
+        "status": "success",
+        "message": "Pipeline run loaded.",
+        "pipeline_run": run,
+    }
+
+
+@router.get("/runs")
+def list_pipeline_runs(project_id: str | None = None, limit: int = 20):
+    pipeline_executor = get_pipeline_executor()
+    runs = pipeline_executor.list_pipeline_runs(project_id=project_id, limit=limit)
+    return {
+        "status": "success",
+        "message": "Pipeline runs loaded.",
+        "items": runs,
+        "count": len(runs),
+    }

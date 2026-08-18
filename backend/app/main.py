@@ -26,9 +26,10 @@ app = FastAPI(
         "repositories, generates deployment assets, opens GitHub pull requests, "
         "deploys to Azure Container Apps, verifies runtime health, analyzes incidents, "
         "stores project history in PostgreSQL, plans dependency-aware workflows, "
+        "uses conversational and planning LLM agents with deterministic policy enforcement, "
         "and executes safe backend pipeline steps with human approval gates."
     ),
-    version="0.20.0",
+    version="0.21.1",
 )
 
 
@@ -51,8 +52,8 @@ def root():
     return {
         "status": "success",
         "message": "CloudMind API is running.",
-        "version": "0.20.0",
-        "phase": "phase_20b_backend_pipeline_executor",
+        "version": "0.21.1",
+        "phase": "phase_21b_llm_conversation_agent",
         "docs": "/docs",
     }
 
@@ -62,7 +63,7 @@ def health_check():
     return {
         "status": "healthy",
         "service": "cloudmind-backend",
-        "version": "0.20.0",
+        "version": "0.21.1",
     }
 
 

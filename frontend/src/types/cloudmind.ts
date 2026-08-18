@@ -178,6 +178,88 @@ export interface WorkflowPlanResponse {
   safety?: Record<string, unknown> | null;
 }
 
+export interface PipelineRunRequest {
+  run_id?: string | null;
+  project_id?: string | null;
+  repo_url?: string | null;
+  resource_group?: string | null;
+  app_name?: string | null;
+  app_url?: string | null;
+  health_path?: string | null;
+  pull_request_url?: string | null;
+  approval_confirmed?: boolean;
+  max_steps?: number;
+  dry_run?: boolean;
+  run_optional?: boolean;
+  run_optional_reporting?: boolean;
+  stop_after_gitops?: boolean;
+  overwrite?: boolean;
+  publish_to_github?: boolean;
+  session_id?: string | null;
+}
+
+export interface PipelineStepResult {
+  step_id: string;
+  title: string;
+  status: string;
+  message: string;
+  tool_intent?: string | null;
+  requires_approval?: boolean;
+  output?: Record<string, unknown> | null;
+}
+
+export interface PipelineRunRecord {
+  id: string;
+  project_id?: string | null;
+  session_id?: string | null;
+  status: string;
+  checkpoint_status: string;
+  pause_reason?: string | null;
+  repo_url?: string | null;
+  pull_request_url?: string | null;
+  pull_request_number?: number | null;
+  merge_commit_sha?: string | null;
+  image?: string | null;
+  context: Record<string, unknown>;
+  executed_steps: PipelineStepResult[];
+  checkpoint: Record<string, unknown>;
+  last_error?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface PipelineRunResponse {
+  status: string;
+  message: string;
+  project_id?: string | null;
+  repo_url?: string | null;
+  run_id?: string | null;
+  checkpoint_status?: string | null;
+  started: boolean;
+  completed: boolean;
+  paused: boolean;
+  pause_reason?: string | null;
+  executed_steps: PipelineStepResult[];
+  executed_count: number;
+  workflow_status_before?: string | null;
+  workflow_status_after?: string | null;
+  next_step?: WorkflowStep | null;
+  workflow_summary?: WorkflowSummary | null;
+  workflow_plan?: WorkflowPlanResponse | null;
+  pipeline_context?: Record<string, unknown> | null;
+  checkpoint_result?: Record<string, unknown> | null;
+  pipeline_run?: PipelineRunRecord | null;
+  safety: Record<string, unknown>;
+}
+
+export interface PipelineRunListResponse {
+  status: string;
+  message: string;
+  items: PipelineRunRecord[];
+  count: number;
+}
+
 export interface CloudMindChatResult {
   status: string;
   message: string;
@@ -213,6 +295,9 @@ export interface ChatMessage {
   content: string;
   intent?: string;
   toolName?: string | null;
+  aiProvider?: string | null;
+  aiModel?: string | null;
+  aiFallback?: boolean;
   status?: string;
   timestamp: string;
 }

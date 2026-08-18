@@ -4,6 +4,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.agents.conversation_memory_agent import ConversationMemoryAgent
+from app.agents.llm_conversation_agent import LLMConversationAgent
+from app.agents.llm_planner_agent import LLMPlannerAgent
 from app.agents.project_memory_agent import ProjectMemoryAgent
 from app.agents.tool_registry_agent import ToolRegistryAgent
 
@@ -12,7 +14,10 @@ class ConversationBrainAgent:
     """
     Conversational brain for CloudMind.
 
-    Phase 20H:
+    Phase 21B:
+    - Uses LLMConversationAgent for natural non-tool conversation.
+    - Uses LLMPlannerAgent as the coordinating reasoning agent for broad DevOps goals.
+    - Keeps specialist agents and the durable deterministic executor in control of tools.
     - Uses PostgreSQL ProjectMemoryAgent for persistent project memory.
     - Stores projects, conversations, messages, action runs, PRs, generated files, and deployments.
     - Hydrates tool arguments from project history.
@@ -61,6 +66,11 @@ class ConversationBrainAgent:
         self.memory = ConversationMemoryAgent()
         self.project_memory = ProjectMemoryAgent()
         self.tools = ToolRegistryAgent()
+        self.llm_planner = LLMPlannerAgent()
+        self.llm_conversation = LLMConversationAgent(
+            provider=self.llm_planner.provider,
+            enabled=self.llm_planner.enabled,
+        )
 
     def chat(
         self,
@@ -183,7 +193,89 @@ class ConversationBrainAgent:
         tool_result = None
         action_run_id = None
 
-        if action_plan["can_execute"]:
+        if intent == "plan_devops_goal":
+            started_action = self.project_memory.start_action_run(
+                project_id=project_id,
+                session_id=session_id,
+                action_type="llm_plan",
+                tool_name="llm_planner",
+                approval_required=False,
+                approval_confirmed=False,
+                input_json={
+                    "user_goal": message,
+                    "repo_url": repo_url,
+                    "project_id": project_id,
+                },
+            )
+            action_run_id = started_action["id"]
+            tool_result = self.llm_planner.plan(
+                user_goal=message,
+                session_id=session_id,
+                project_id=project_id,
+                repo_url=repo_url,
+                project_context=project_context,
+                conversation_state=state,
+            )
+            self.project_memory.finish_action_run(
+                action_run_id=action_run_id,
+                status=str(tool_result.get("status", "unknown")),
+                output_json=self._json_safe(tool_result),
+                error=tool_result.get("provider_error"),
+            )
+            self._store_useful_result(
+                session_id=session_id,
+                intent=intent,
+                tool_name="llm_planner",
+                tool_result=tool_result,
+                project_id=project_id,
+                action_run_id=action_run_id,
+                action_arguments={"user_goal": message},
+            )
+
+        elif intent == "general_chat":
+            started_action = self.project_memory.start_action_run(
+                project_id=project_id,
+                session_id=session_id,
+                action_type="llm_conversation",
+                tool_name="llm_conversation",
+                approval_required=False,
+                approval_confirmed=False,
+                input_json={
+                    "message": message,
+                    "repo_url": repo_url,
+                    "project_id": project_id,
+                },
+            )
+            action_run_id = started_action["id"]
+            tool_result = self.llm_conversation.respond(
+                message=message,
+                session_id=session_id,
+                project_id=project_id,
+                repo_url=repo_url,
+                project_context=project_context,
+                conversation_state=state,
+                recent_messages=self.memory.get_recent_messages(
+                    session_id=session_id,
+                    limit=8,
+                ),
+            )
+            self.project_memory.finish_action_run(
+                action_run_id=action_run_id,
+                status=str(tool_result.get("status", "unknown")),
+                output_json=self._json_safe(tool_result),
+                error=tool_result.get("provider_error"),
+            )
+            self._store_useful_result(
+                session_id=session_id,
+                intent=intent,
+                tool_name="llm_conversation",
+                tool_result=tool_result,
+                project_id=project_id,
+                action_run_id=action_run_id,
+                action_arguments={"message": message},
+            )
+
+        elif action_plan["can_execute"]:
             started_action = self.project_memory.start_action_run(
                 project_id=project_id,
                 session_id=session_id,
@@ -259,7 +351,7 @@ class ConversationBrainAgent:
         return {
             "status": "success",
             "message": "Conversation processed.",
-            "phase": "phase_20h_health_path_aware_chat_brain",
+            "phase": "phase_21b_llm_conversation_agent",
             "session_id": session_id,
             "project_id": project_id,
             "intent": intent,
@@ -287,6 +379,10 @@ class ConversationBrainAgent:
                 "auto_merge": False,
                 "auto_deploy_without_approval": False,
                 "health_path_auto_detection": True,
+                "llm_planner_executes_tools": False,
+                "llm_conversation_executes_tools": False,
+                "deterministic_plan_policy": True,
+                "durable_executor_required_for_multi_step_actions": True,
             },
         }
 
@@ -319,6 +415,23 @@ class ConversationBrainAgent:
 
         if any(word in text for word in ["final report", "mission report", "demo report", "professor demo"]):
             return "final_demo_report"
+
+        if any(
+            phrase in text
+            for phrase in [
+                "production-ready",
+                "production ready",
+                "end-to-end deployment",
+                "end to end deployment",
+                "full pipeline",
+                "complete deployment pipeline",
+                "deploy this repo and",
+                "deploy this repository and",
+                "make this repo production",
+                "make this repository production",
+            ]
+        ):
+            return "plan_devops_goal"
 
         if (
             "azure" in text
@@ -404,8 +517,25 @@ class ConversationBrainAgent:
         if intent == "help":
             return self._no_tool_plan("Help request.")
 
+        if intent == "plan_devops_goal":
+            return {
+                "can_execute": True,
+                "tool_name": "llm_planner",
+                "requires_approval": False,
+                "missing_fields": [],
+                "reason": "The coordinating AI planner will create a structured multi-agent plan without executing tools.",
+                "arguments": {},
+            }
+
         if intent == "general_chat":
-            return self._no_tool_plan("No executable DevOps intent detected.")
+            return {
+                "can_execute": True,
+                "tool_name": "llm_conversation",
+                "requires_approval": False,
+                "missing_fields": [],
+                "reason": "The conversational AI agent will respond without executing DevOps tools.",
+                "arguments": {},
+            }
 
         if intent == "analyze_repository":
             arguments = {
@@ -512,6 +642,7 @@ class ConversationBrainAgent:
                 "repo_url": state.get("repo_url"),
                 "resource_group": state.get("resource_group"),
                 "app_name": state.get("app_name"),
+                "app_url": state.get("latest_app_url"),
                 "health_path": state.get("health_path"),
                 "timeout_seconds": 60,
                 "log_tail": 100,
@@ -573,7 +704,8 @@ class ConversationBrainAgent:
     ) -> str:
         if intent == "help":
             return (
-                "I can analyze repositories, generate Docker/Kubernetes/CI/CD/Azure files through GitHub pull requests, "
+                "I can understand broad DevOps goals, create structured multi-agent plans, analyze repositories, "
+                "generate Docker/Kubernetes/CI/CD/Azure files through GitHub pull requests, "
                 "deploy apps to Azure Container Apps with approval, check health, inspect logs, diagnose incidents, "
                 "plan remediation, verify deployments, generate final demo reports, and remember project history in PostgreSQL."
             )
@@ -600,6 +732,16 @@ class ConversationBrainAgent:
             return (
                 "I understood your message, but I did not need to run a DevOps tool yet. "
                 "Give me a GitHub repository URL or ask for a specific operation."
+            )
+
+        if action_plan.get("tool_name") == "llm_planner":
+            return self._llm_plan_message(tool_result)
+
+        if action_plan.get("tool_name") == "llm_conversation":
+            return str(
+                (tool_result.get("response") or {}).get("message")
+                or tool_result.get("message")
+                or "CloudMind could not generate a conversational response."
             )
 
         if self._tool_failed(tool_result):
@@ -650,6 +792,42 @@ class ConversationBrainAgent:
             return self._final_report_message(tool_result)
 
         return f"I completed the operation. Status: {tool_result.get('status', 'unknown')}."
+
+    def _llm_plan_message(self, tool_result: dict[str, Any]) -> str:
+        plan = tool_result.get("plan") or {}
+        steps = plan.get("steps") or []
+        fallback_used = tool_result.get("fallback_used") is True
+        brain = (
+            "deterministic fallback"
+            if fallback_used
+            else f"{tool_result.get('provider')} / {tool_result.get('model')}"
+        )
+        step_lines = []
+
+        for index, step in enumerate(steps, start=1):
+            approval = " — approval required" if step.get("requires_approval") else ""
+            step_lines.append(
+                f"{index}. {step.get('title')} [{step.get('specialist_agent')}]{approval}"
+            )
+
+        steps_text = "\n".join(step_lines) if step_lines else "No unfinished execution steps were found."
+        missing = plan.get("missing_information") or []
+        missing_text = (
+            "\n\nMissing information:\n" + "\n".join(f"- {item}" for item in missing)
+            if missing
+            else ""
+        )
+
+        return (
+            "CloudMind created a structured multi-agent DevOps plan. No deployment or write action was executed.\n\n"
+            f"Planning brain: {brain}\n"
+            f"Goal: {plan.get('goal')}\n"
+            f"Summary: {plan.get('summary')}\n\n"
+            f"Specialist-agent plan:\n{steps_text}"
+            f"{missing_text}\n\n"
+            f"Approval policy: {plan.get('approval_summary')}\n"
+            f"Next action: {plan.get('recommended_next_action')}"
+        )
 
     def _repository_analysis_message(self, tool_result: dict[str, Any]) -> str:
         repo_name = tool_result.get("repo_name", "unknown repository")
@@ -767,6 +945,23 @@ class ConversationBrainAgent:
         revision = azure.get("latest_ready_revision_name") or azure.get("latest_revision_name")
         health_path = tool_result.get("health_path")
         health_path_source = tool_result.get("health_path_source")
+
+        if tool_result.get("azure_verified") is False:
+            health = tool_result.get("health") or {}
+            endpoint_healthy = tool_result.get("endpoint_healthy") is True
+            endpoint_status = "healthy" if endpoint_healthy else "could not be confirmed"
+
+            return (
+                "The public application endpoint is "
+                f"{endpoint_status}, but Azure control-plane status could not be verified. "
+                "I saved the verification result in project history.\n\n"
+                f"Status: {tool_result.get('status')}\n"
+                f"Message: {tool_result.get('message')}\n"
+                f"URL: {app_url}\n"
+                f"HTTP status: {health.get('status_code')}\n"
+                f"Health path used: {health_path}\n"
+                f"Health path source: {health_path_source}"
+            )
 
         if healthy:
             return (
@@ -910,6 +1105,20 @@ class ConversationBrainAgent:
                     "message": "Analyze this repo https://github.com/Hedi808/test-3s.git",
                 }
             ]
+
+        if intent == "plan_devops_goal":
+            suggestions.extend(
+                [
+                    {
+                        "label": "Run durable pipeline",
+                        "message": "__run_full_pipeline__",
+                    },
+                    {
+                        "label": "Review workflow plan",
+                        "message": "__workflow_plan__",
+                    },
+                ]
+            )
 
         if intent == "analyze_repository":
             suggestions.extend(

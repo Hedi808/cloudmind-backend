@@ -182,10 +182,12 @@ class FinalDemoOrchestratorAgent:
             repo_url=project.repo_url,
         )
 
-        steps = workflow_plan.get("steps", [])
-        summary = workflow_plan.get("summary", {})
-        workflow_status = workflow_plan.get("status", "unknown")
-        next_step = workflow_plan.get("next_step")
+        prepared_workflow = self._prepare_report_workflow(workflow_plan)
+        steps = prepared_workflow["steps"]
+        summary = prepared_workflow["summary"]
+        workflow_status = prepared_workflow["status"]
+        next_step = prepared_workflow["next_step"]
+        report_step_satisfied = prepared_workflow["report_step_satisfied"]
 
         required_blockers = self._extract_required_blockers(steps)
         warnings = self._extract_warnings(
@@ -194,7 +196,7 @@ class FinalDemoOrchestratorAgent:
             pull_request_url=pull_request_url,
         )
 
-        demo_ready = workflow_status == "workflow_ready" and not required_blockers
+        demo_ready = report_step_satisfied and not required_blockers
 
         status = "demo_ready" if demo_ready else "demo_blocked"
         recommendation = "ready_for_demo" if demo_ready else "fix_blockers_before_demo"
@@ -262,6 +264,67 @@ class FinalDemoOrchestratorAgent:
             result["memory_save_error"] = None
 
         return result
+
+    def _prepare_report_workflow(
+        self,
+        workflow_plan: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Project the final-report step as completed by this invocation.
+
+        The workflow plan is calculated before the report action is saved. Without
+        this projection, a valid report blocks itself at 90% because it requires a
+        previously completed final-report action as proof that it can generate one.
+        """
+        steps = [dict(step) for step in workflow_plan.get("steps", [])]
+        final_step = next(
+            (step for step in steps if step.get("id") == "final_demo_report"),
+            None,
+        )
+        report_step_satisfied = False
+
+        if final_step is not None:
+            final_status = str(final_step.get("status") or "").lower()
+            report_step_satisfied = final_status == "completed" or (
+                final_status == "required"
+                and final_step.get("can_execute_now") is True
+            )
+
+            if report_step_satisfied:
+                final_step["status"] = "completed"
+                final_step["can_execute_now"] = False
+                final_step["reason"] = "Final CloudMind demo report generated successfully."
+                evidence = list(final_step.get("evidence") or [])
+                evidence.append("Current report generation completed the final workflow step.")
+                final_step["evidence"] = evidence
+
+        if report_step_satisfied:
+            workflow_status = "workflow_ready"
+            next_step = None
+        else:
+            workflow_status = workflow_plan.get("status", "unknown")
+            next_step = workflow_plan.get("next_step")
+
+        return {
+            "steps": steps,
+            "summary": self._summarize_steps(steps),
+            "status": workflow_status,
+            "next_step": next_step,
+            "report_step_satisfied": report_step_satisfied,
+        }
+
+    def _summarize_steps(self, steps: list[dict[str, Any]]) -> dict[str, int]:
+        total = len(steps)
+        completed = len([step for step in steps if step.get("status") == "completed"])
+
+        return {
+            "total_steps": total,
+            "completed": completed,
+            "required": len([step for step in steps if step.get("status") == "required"]),
+            "blocked": len([step for step in steps if step.get("status") == "blocked"]),
+            "optional": len([step for step in steps if step.get("status") == "optional"]),
+            "progress_percent": int((completed / total) * 100) if total else 0,
+        }
 
     def generate_quick_report(
         self,
@@ -436,6 +499,8 @@ class FinalDemoOrchestratorAgent:
         required_step_ids = {
             "analyze_repository",
             "generate_docker",
+            "generate_kubernetes",
+            "generate_azure_files",
             "generate_cicd",
             "publish_container_image",
             "deploy_to_azure",
@@ -449,7 +514,15 @@ class FinalDemoOrchestratorAgent:
             step_id = step.get("id")
             step_status = step.get("status")
 
-            if step_id in required_step_ids and step_status in {"required", "blocked"}:
+            is_required_dependency = (
+                step_id in required_step_ids
+                and step_status in {"required", "blocked"}
+            )
+            is_blocked_final_report = (
+                step_id == "final_demo_report" and step_status == "blocked"
+            )
+
+            if is_required_dependency or is_blocked_final_report:
                 blockers.append(
                     {
                         "id": step_id,

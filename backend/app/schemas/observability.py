@@ -18,6 +18,7 @@ class HealthCheckResponse(BaseModel):
 class AzureContainerAppStatusRequest(BaseModel):
     resource_group: str
     app_name: str
+    app_url: str | None = None
     health_path: str = "/health"
     timeout_seconds: int = 10
 

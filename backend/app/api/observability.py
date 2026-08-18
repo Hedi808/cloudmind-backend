@@ -54,6 +54,7 @@ def check_azure_container_app_status(request: AzureContainerAppStatusRequest):
         result = observability_agent.check_azure_container_app_status(
             resource_group=request.resource_group,
             app_name=request.app_name,
+            app_url=request.app_url,
             health_path=request.health_path,
             timeout_seconds=request.timeout_seconds,
         )

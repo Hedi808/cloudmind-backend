@@ -9,7 +9,7 @@ from app.schemas.chat import (
 
 router = APIRouter(
     prefix="/api/chat",
-    tags=["Phase 15A - Conversational Brain"],
+    tags=["Phase 21A - LLM Multi-Agent Brain"],
 )
 
 conversation_brain_agent = ConversationBrainAgent()
@@ -69,4 +69,13 @@ def list_tools():
         "result": {
             "tools": conversation_brain_agent.tools.list_tools(),
         },
+    }
+
+
+@router.get("/llm-status")
+def llm_status():
+    return {
+        "status": "success",
+        "message": "CloudMind LLM configuration status loaded. A real request is required to verify credentials.",
+        "result": conversation_brain_agent.llm_planner.health(),
     }

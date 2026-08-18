@@ -29,12 +29,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { sendCloudMindMessage } from "./api/cloudmindApi";
+import { listPipelineRuns, runOrResumePipeline } from "./api/pipelineApi";
 import { getProject, listProjects } from "./api/projectsApi";
 import { getWorkflowPlan } from "./api/workflowsApi";
 import type {
   ChatMessage,
   CloudMindChatResult,
   ConversationState,
+  PipelineRunRecord,
+  PipelineRunResponse,
   ProjectActionRun,
   ProjectArtifact,
   ProjectContext,
@@ -65,13 +68,6 @@ const emptyProject = {
   appName: "",
   pullRequestUrl: "",
 };
-
-const gitOpsStepIds = [
-  "generate_docker",
-  "generate_kubernetes",
-  "generate_cicd",
-  "generate_azure_files",
-];
 
 const repositoryActions = [
   {
@@ -159,6 +155,10 @@ export default function App() {
   const [workflowPlan, setWorkflowPlan] =
     useState<WorkflowPlanResponse | null>(null);
   const [isWorkflowLoading, setIsWorkflowLoading] = useState(false);
+  const [pipelineRunId, setPipelineRunId] = useState<string | null>(null);
+  const [pipelineCheckpointStatus, setPipelineCheckpointStatus] = useState<
+    string | null
+  >(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -185,8 +185,14 @@ export default function App() {
 
   const project = projectContext?.project ?? null;
   const latestDeployment = projectContext?.latest_deployment ?? null;
-  const latestActions = projectContext?.latest_actions ?? [];
-  const latestArtifacts = projectContext?.latest_artifacts ?? [];
+  const latestActions = useMemo(
+    () => projectContext?.latest_actions ?? [],
+    [projectContext],
+  );
+  const latestArtifacts = useMemo(
+    () => projectContext?.latest_artifacts ?? [],
+    [projectContext],
+  );
   const selectedProjectId = project?.id ?? conversationState?.project_id ?? null;
 
   const missionStatus = useMemo(() => {
@@ -211,6 +217,7 @@ export default function App() {
 
     const latestStatus =
       toolResultStatus ??
+      pipelineCheckpointStatus ??
       workflowPlan?.status ??
       conversationState?.latest_result_status ??
       latestDeployment?.health_status ??
@@ -260,12 +267,9 @@ export default function App() {
     latestDeployment,
     latestResult,
     latestToolResult,
+    pipelineCheckpointStatus,
     workflowPlan,
   ]);
-
-  useEffect(() => {
-    void loadSavedProjects();
-  }, []);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -296,6 +300,33 @@ export default function App() {
       setIsProjectsLoading(false);
     }
   };
+
+  const restoreLatestPipelineRun = async (projectId: string) => {
+    setPipelineRunId(null);
+    setPipelineCheckpointStatus(null);
+
+    try {
+      const response = await listPipelineRuns(projectId);
+      const activeRun = response.items.find(
+        (run) => !isTerminalPipelineRun(run),
+      );
+      const latestRun = activeRun ?? response.items[0] ?? null;
+
+      setPipelineRunId(activeRun?.id ?? null);
+      setPipelineCheckpointStatus(latestRun?.checkpoint_status ?? null);
+    } catch {
+      setPipelineRunId(null);
+      setPipelineCheckpointStatus(null);
+    }
+  };
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void loadSavedProjects();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, []);
 
   const loadWorkflowPlan = async (
     options?: {
@@ -400,17 +431,22 @@ export default function App() {
 
   const selectSavedProject = async (selectedProject: ProjectMemoryProject) => {
     setIsProjectsLoading(true);
+    setPipelineRunId(null);
+    setPipelineCheckpointStatus(null);
 
     try {
       const response = await getProject(selectedProject.id);
       hydrateFromProjectContext(response.context);
       setProjectMode("custom");
 
-      await loadWorkflowPlan({
-        projectId: response.project.id,
-        repo: response.project.repo_url,
-        addChatMessage: false,
-      });
+      await Promise.all([
+        loadWorkflowPlan({
+          projectId: response.project.id,
+          repo: response.project.repo_url,
+          addChatMessage: false,
+        }),
+        restoreLatestPipelineRun(response.project.id),
+      ]);
 
       appendAssistantMessage(
         `Loaded saved project from PostgreSQL memory.\n\nProject: ${
@@ -461,7 +497,7 @@ export default function App() {
         approval_confirmed: approvalConfirmed,
         context: {
           project_mode: projectMode,
-          frontend_phase: "phase_20_ui_polish",
+          frontend_phase: "phase_21b_llm_conversation_agent",
         },
       });
 
@@ -488,6 +524,9 @@ export default function App() {
         content: result.assistant_message || response.message,
         intent: result.intent,
         toolName: result.action?.tool_name,
+        aiProvider: getString(result.tool_result, "provider"),
+        aiModel: getString(result.tool_result, "model"),
+        aiFallback: getBoolean(result.tool_result, "fallback_used") ?? false,
         status:
           getString(result.tool_result, "status") ??
           result.conversation_state?.latest_result_status ??
@@ -549,120 +588,114 @@ export default function App() {
       return;
     }
 
+    if (!pipelineRunId && !selectedProjectId && !repoUrl) {
+      appendAssistantMessage(
+        "I need a saved project or repository URL before I can start a pipeline run.",
+        "missing_context",
+      );
+      return;
+    }
+
     setIsPipelineRunning(true);
 
     appendAssistantMessage(
-      "Starting full pipeline executor.\n\nCloudMind will execute the next safe workflow steps in order. It will stop before any step that needs missing human approval or manual PR review.",
-      "pipeline_started",
+      pipelineRunId
+        ? `Resuming saved pipeline run ${pipelineRunId}. CloudMind will verify its current checkpoint before taking another action.`
+        : "Starting a durable pipeline run. CloudMind will save every checkpoint and pause for PR review, CI, image publication, or human approval when required.",
+      pipelineRunId ? "pipeline_resuming" : "pipeline_started",
     );
 
     try {
-      let plan = await loadWorkflowPlan({ addChatMessage: false });
-      const maxSteps = 8;
+      const result = await runOrResumePipeline({
+        run_id: pipelineRunId,
+        project_id: selectedProjectId,
+        repo_url: repoUrl || null,
+        resource_group: resourceGroup || null,
+        app_name: appName || null,
+        app_url:
+          latestDeployment?.url ?? conversationState?.latest_app_url ?? null,
+        health_path: conversationState?.health_path ?? null,
+        pull_request_url: pullRequestUrl || null,
+        approval_confirmed: approvalConfirmed,
+        max_steps: 8,
+        dry_run: false,
+        run_optional: false,
+        run_optional_reporting: true,
+        stop_after_gitops: true,
+        overwrite: true,
+        publish_to_github: true,
+        session_id: sessionId,
+      });
 
-      for (let index = 0; index < maxSteps; index += 1) {
-        if (!plan) {
-          appendAssistantMessage(
-            "Pipeline stopped because no workflow plan could be loaded.",
-            "pipeline_stopped",
-          );
-          break;
+      const activeRun =
+        result.pipeline_run && !isTerminalPipelineRun(result.pipeline_run)
+          ? result.pipeline_run
+          : null;
+
+      setPipelineRunId(activeRun?.id ?? null);
+      setPipelineCheckpointStatus(result.checkpoint_status ?? result.status);
+      setApprovalConfirmed(false);
+      hydrateFromPipelineResult(result);
+      appendAssistantMessage(formatPipelineRunMessage(result), result.status);
+      void loadSavedProjects();
+
+      const nextProjectId =
+        result.project_id ?? getString(result.pipeline_context, "project_id");
+      const nextRepo = result.repo_url ?? getString(result.pipeline_context, "repo_url");
+
+      if (nextProjectId) {
+        try {
+          const projectResponse = await getProject(nextProjectId);
+          hydrateFromProjectContext(projectResponse.context);
+        } catch {
+          // The pipeline response still contains enough context to keep the UI usable.
         }
+      }
 
-        const nextStep = plan.next_step;
-
-        if (!nextStep) {
-          appendAssistantMessage(
-            "Full pipeline complete. No next step is required.",
-            "pipeline_complete",
-          );
-          break;
-        }
-
-        if (
-          plan.status === "workflow_ready" &&
-          nextStep.status === "optional" &&
-          nextStep.id !== "final_demo_report"
-        ) {
-          appendAssistantMessage(
-            `Main pipeline is already ready.\n\nOptional remaining step: ${nextStep.title}\nReason: ${nextStep.reason}\n\nCloudMind will not run optional GitOps work automatically. You can run it manually if needed.`,
-            "pipeline_ready",
-          );
-          break;
-        }
-
-        if (nextStep.status === "blocked") {
-          appendAssistantMessage(
-            `Pipeline stopped because the next step is blocked.\n\nStep: ${nextStep.title}\nReason: ${nextStep.reason}`,
-            "pipeline_blocked",
-          );
-          break;
-        }
-
-        if (!nextStep.user_message) {
-          appendAssistantMessage(
-            `Pipeline stopped because the next step has no executable chat command.\n\nStep: ${nextStep.title}`,
-            "pipeline_stopped",
-          );
-          break;
-        }
-
-        if (nextStep.requires_approval && !approvalConfirmed) {
-          appendAssistantMessage(
-            `Pipeline paused for human approval.\n\nNext step: ${nextStep.title}\nReason: ${nextStep.reason}\n\nTick the Human approval checkbox, then run the pipeline again.`,
-            "approval_required",
-          );
-          break;
-        }
-
-        appendAssistantMessage(
-          `Pipeline executing step ${index + 1}.\n\nStep: ${nextStep.title}`,
-          "pipeline_executing",
-        );
-
-        const result = await executeChatCommand(nextStep.user_message, {
-          addUserMessage: true,
-        });
-
-        if (!result) {
-          appendAssistantMessage(
-            "Pipeline stopped because the executed step did not return a valid result.",
-            "pipeline_stopped",
-          );
-          break;
-        }
-
-        if (gitOpsStepIds.includes(nextStep.id)) {
-          appendAssistantMessage(
-            `Pipeline paused after a GitOps step.\n\nStep executed: ${nextStep.title}\n\nReview and merge the generated pull request if one was created, then run the pipeline again. CloudMind pauses here to avoid stacking unreviewed infrastructure PRs.`,
-            "manual_review_required",
-          );
-          break;
-        }
-
-        const nextProjectId =
-          result.project_id ?? result.project_context?.project?.id ?? selectedProjectId;
-        const nextRepo = result.conversation_state?.repo_url ?? repoUrl;
-
-        plan = await loadWorkflowPlan({
+      if (result.workflow_plan) {
+        setWorkflowPlan(result.workflow_plan);
+      } else if (nextProjectId || nextRepo) {
+        await loadWorkflowPlan({
           projectId: nextProjectId,
           repo: nextRepo,
           addChatMessage: false,
         });
-
-        if (
-          plan?.status === "workflow_ready" &&
-          (!plan.next_step || plan.next_step.id !== "final_demo_report")
-        ) {
-          appendAssistantMessage(
-            "Full pipeline complete. Required workflow steps are ready.",
-            "pipeline_complete",
-          );
-          break;
-        }
       }
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "CloudMind could not run or resume the saved pipeline.";
+
+      appendAssistantMessage(`Pipeline request failed.\n\n${message}`, "failed");
     } finally {
       setIsPipelineRunning(false);
+    }
+  };
+
+  const hydrateFromPipelineResult = (result: PipelineRunResponse) => {
+    const context = result.pipeline_context;
+    const nextRepoUrl = result.repo_url ?? getString(context, "repo_url");
+    const nextResourceGroup = getString(context, "resource_group");
+    const nextAppName = getString(context, "app_name");
+    const nextPullRequestUrl =
+      result.pipeline_run?.pull_request_url ??
+      getString(context, "pull_request_url");
+
+    if (nextRepoUrl) {
+      setRepoUrl(nextRepoUrl);
+    }
+
+    if (nextResourceGroup) {
+      setResourceGroup(nextResourceGroup);
+    }
+
+    if (nextAppName) {
+      setAppName(nextAppName);
+    }
+
+    if (nextPullRequestUrl) {
+      setPullRequestUrl(nextPullRequestUrl);
     }
   };
 
@@ -673,6 +706,8 @@ export default function App() {
     setAppName(demoProject.appName);
     setPullRequestUrl(demoProject.pullRequestUrl);
     setWorkflowPlan(null);
+    setPipelineRunId(null);
+    setPipelineCheckpointStatus(null);
   };
 
   const useNewProject = () => {
@@ -686,6 +721,8 @@ export default function App() {
     setLatestResult(null);
     setLatestToolResult(null);
     setWorkflowPlan(null);
+    setPipelineRunId(null);
+    setPipelineCheckpointStatus(null);
     setSessionId(createSessionId());
   };
 
@@ -832,7 +869,7 @@ export default function App() {
                   value={
                     isPipelineRunning
                       ? "Pipeline running"
-                      : workflowPlan?.status ?? "Ready"
+                      : pipelineCheckpointStatus ?? workflowPlan?.status ?? "Ready"
                   }
                   compact
                 />
@@ -871,7 +908,7 @@ export default function App() {
                   ? "CloudMind is running the full pipeline executor..."
                   : isWorkflowLoading
                     ? "CloudMind is planning the workflow from PostgreSQL memory..."
-                    : "CloudMind is calling tools and updating memory..."}
+                    : "CloudMind AI is reasoning with the project context..."}
               </motion.div>
             )}
 
@@ -933,6 +970,8 @@ export default function App() {
             isLoading={isWorkflowLoading}
             isPipelineRunning={isPipelineRunning}
             approvalConfirmed={approvalConfirmed}
+            pipelineRunId={pipelineRunId}
+            pipelineCheckpointStatus={pipelineCheckpointStatus}
             onRefresh={() => void loadWorkflowPlan({ addChatMessage: true })}
             onRunNext={() => void runNextWorkflowStep()}
             onRunPipeline={() => void runFullPipeline()}
@@ -1109,6 +1148,8 @@ function WorkflowPanel({
   isLoading,
   isPipelineRunning,
   approvalConfirmed,
+  pipelineRunId,
+  pipelineCheckpointStatus,
   onRefresh,
   onRunNext,
   onRunPipeline,
@@ -1117,6 +1158,8 @@ function WorkflowPanel({
   isLoading: boolean;
   isPipelineRunning: boolean;
   approvalConfirmed: boolean;
+  pipelineRunId: string | null;
+  pipelineCheckpointStatus: string | null;
   onRefresh: () => void;
   onRunNext: () => void;
   onRunPipeline: () => void;
@@ -1124,6 +1167,11 @@ function WorkflowPanel({
   const nextStep = workflowPlan?.next_step ?? null;
   const requiresApproval = nextStep?.requires_approval === true;
   const approvalMissing = requiresApproval && !approvalConfirmed;
+  const pipelineButtonLabel = isPipelineRunning
+    ? "Running Pipeline..."
+    : pipelineRunId
+      ? "Resume Saved Pipeline"
+      : "Run Full Pipeline";
 
   return (
     <SectionCard
@@ -1140,20 +1188,33 @@ function WorkflowPanel({
       {!workflowPlan ? (
         <div className="space-y-3">
           <EmptyState text="No workflow plan yet. Click Run Pipeline or Plan Pipeline." />
+          {pipelineCheckpointStatus && (
+            <PipelineCheckpointCard
+              runId={pipelineRunId}
+              checkpointStatus={pipelineCheckpointStatus}
+            />
+          )}
           <PrimaryButton
             onClick={onRunPipeline}
             disabled={isLoading || isPipelineRunning}
-            label={isPipelineRunning ? "Running Pipeline..." : "Run Full Pipeline"}
+            label={pipelineButtonLabel}
           />
         </div>
       ) : (
         <div className="space-y-4">
           <WorkflowChart workflowPlan={workflowPlan} />
 
+          {pipelineCheckpointStatus && (
+            <PipelineCheckpointCard
+              runId={pipelineRunId}
+              checkpointStatus={pipelineCheckpointStatus}
+            />
+          )}
+
           <PrimaryButton
             onClick={onRunPipeline}
             disabled={isLoading || isPipelineRunning}
-            label={isPipelineRunning ? "Running Pipeline..." : "Run Full Pipeline"}
+            label={pipelineButtonLabel}
           />
 
           {nextStep && (
@@ -1199,6 +1260,30 @@ function WorkflowPanel({
         </div>
       )}
     </SectionCard>
+  );
+}
+
+function PipelineCheckpointCard({
+  runId,
+  checkpointStatus,
+}: {
+  runId: string | null;
+  checkpointStatus: string;
+}) {
+  return (
+    <div className="rounded-3xl border border-violet-400/25 bg-violet-500/10 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs uppercase tracking-[0.16em] text-violet-200/70">
+            Persisted pipeline
+          </p>
+          <p className="mt-1 truncate font-mono text-xs text-violet-100">
+            {runId ?? "Latest run"}
+          </p>
+        </div>
+        <StatusPill value={formatStatusLabel(checkpointStatus)} compact />
+      </div>
+    </div>
   );
 }
 
@@ -1459,11 +1544,20 @@ function ChatBubble({ message }: { message: ChatMessage }) {
           {message.content}
         </pre>
 
-        {(message.intent || message.toolName || message.status) && (
+        {(message.intent ||
+          message.toolName ||
+          message.aiProvider ||
+          message.aiModel ||
+          message.status) && (
           <div className="mt-3 flex flex-wrap gap-2">
             {message.intent && <StatusPill value={`Intent: ${message.intent}`} />}
             {message.toolName && (
               <StatusPill value={`Tool: ${message.toolName}`} />
+            )}
+            {message.aiProvider && (
+              <StatusPill
+                value={`${message.aiFallback ? "Fallback" : "AI"}: ${message.aiProvider}${message.aiModel ? ` / ${message.aiModel}` : ""}`}
+              />
             )}
             {message.status && <StatusPill value={message.status} />}
           </div>
@@ -1840,6 +1934,61 @@ Blocked: ${plan.summary.blocked}
 Optional: ${plan.summary.optional}
 
 ${plan.message}${nextStep}`;
+}
+
+function formatPipelineRunMessage(result: PipelineRunResponse): string {
+  const checkpoint = result.checkpoint_status
+    ? `\nCheckpoint: ${formatStatusLabel(result.checkpoint_status)}`
+    : "";
+  const run = result.run_id ? `\nRun ID: ${result.run_id}` : "";
+  const pullRequestUrl =
+    result.pipeline_run?.pull_request_url ??
+    getString(result.pipeline_context, "pull_request_url");
+  const pullRequest = pullRequestUrl
+    ? `\nPull request: ${pullRequestUrl}`
+    : "";
+  const executed = result.executed_steps.length
+    ? `\n\nExecuted now:\n${result.executed_steps
+        .map((step) => `- ${step.title}: ${step.message}`)
+        .join("\n")}`
+    : "";
+
+  const guidance: Record<string, string> = {
+    waiting_for_pr_merge:
+      "Review and merge the pull request, then click Resume Saved Pipeline.",
+    waiting_for_ci:
+      "CI is still running. Click Resume Saved Pipeline to check it again.",
+    waiting_for_image:
+      "CloudMind is waiting for the GHCR image. Click Resume Saved Pipeline to recheck it.",
+    waiting_for_deployment_approval:
+      "Tick Human approval confirmed, then click Resume Saved Pipeline to deploy to Azure.",
+    waiting_for_approval:
+      "Tick Human approval confirmed, then click Resume Saved Pipeline.",
+    pipeline_complete: "The required workflow is complete.",
+    workflow_ready: "The required workflow is ready.",
+    pipeline_failed: "Inspect the failed checkpoint before starting a new run.",
+    active_incident_detected:
+      "Deployment progression stopped because an active incident was detected.",
+    checkpoint_error:
+      "The run remains saved. Resolve the verification error, then resume it.",
+  };
+  const nextAction = guidance[result.status]
+    ? `\n\nNext action: ${guidance[result.status]}`
+    : "";
+
+  return `${result.message}${run}${checkpoint}${pullRequest}${executed}${nextAction}`;
+}
+
+function isTerminalPipelineRun(run: PipelineRunRecord): boolean {
+  return ["completed", "failed", "blocked_incident", "cancelled"].includes(
+    run.status,
+  );
+}
+
+function formatStatusLabel(value: string): string {
+  return value
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function findLatestPullRequestUrl(artifacts: ProjectArtifact[]): string | null {

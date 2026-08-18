@@ -977,9 +977,8 @@ class AzureRuntimeDeploymentAgent:
             component.get("name") or component.get("type") or "backend"
         )
 
-        derived_app_name = self._sanitize_azure_name(
+        derived_app_name = self._sanitize_container_app_name(
             app_name or f"{azure_repo_slug}-{component_name}",
-            max_length=32,
         )
 
         derived_resource_group = self._sanitize_azure_name(
@@ -1732,4 +1731,23 @@ class AzureRuntimeDeploymentAgent:
         self,
         value: str,
     ) -> str:
-        return self._sanitize_azure_name(value, max_length=32)
+        return self._sanitize_container_app_name(value)
+
+    def _sanitize_container_app_name(
+        self,
+        value: str,
+    ) -> str:
+        value = self._normalize_name(value)
+
+        if not value[0].isalpha():
+            if value.endswith("-app"):
+                value = value[:-4].rstrip("-")
+
+            value = f"app-{value}"
+
+        value = self._sanitize_azure_name(value, max_length=32)
+
+        if not value[0].isalpha():
+            value = self._sanitize_azure_name(f"app-{value}", max_length=32)
+
+        return value

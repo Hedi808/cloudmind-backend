@@ -120,6 +120,7 @@ class ObservabilityAgent:
         app_name: str,
         health_path: str = "/health",
         timeout_seconds: int = 10,
+        app_url: str | None = None,
     ) -> dict[str, Any]:
         resource_group = resource_group.strip()
         app_name = app_name.strip()
@@ -137,17 +138,14 @@ class ObservabilityAgent:
         account_result = self._get_azure_account()
 
         if not account_result["success"]:
-            return {
-                "status": "failed",
-                "message": "Azure CLI is not logged in or not available.",
-                "healthy": False,
-                "azure_cli": account_result,
-                "recommendations": [
-                    "Install Azure CLI if the az command is missing.",
-                    "Run az login in PowerShell.",
-                    "Run az account show to verify the active subscription.",
-                ],
-            }
+            return self._build_control_plane_failure_result(
+                command_result=account_result,
+                resource_group=resource_group,
+                app_name=app_name,
+                app_url=app_url,
+                health_path=health_path,
+                timeout_seconds=timeout_seconds,
+            )
 
         subscription_id = account_result["subscription_id"]
 
@@ -158,19 +156,14 @@ class ObservabilityAgent:
         )
 
         if not app_result["success"]:
-            return {
-                "status": "not_found",
-                "message": "Azure Container App was not found or could not be read.",
-                "healthy": False,
-                "resource_group": resource_group,
-                "app_name": app_name,
-                "azure_cli": app_result,
-                "recommendations": [
-                    "Verify the resource group name.",
-                    "Verify the Container App name.",
-                    "Run the Azure deployment script again after registering Microsoft.App and Microsoft.OperationalInsights providers.",
-                ],
-            }
+            return self._build_control_plane_failure_result(
+                command_result=app_result,
+                resource_group=resource_group,
+                app_name=app_name,
+                app_url=app_url,
+                health_path=health_path,
+                timeout_seconds=timeout_seconds,
+            )
 
         try:
             app_data = json.loads(app_result["stdout"])
@@ -220,6 +213,9 @@ class ObservabilityAgent:
             "status": "healthy" if healthy else "warning",
             "message": "Azure Container App status inspected.",
             "healthy": healthy,
+            "endpoint_healthy": bool(health_result and health_result.get("healthy") is True),
+            "azure_verified": True,
+            "verification_status": "verified",
             "resource_group": resource_group,
             "app_name": app_name,
             "app_url": f"https://{parsed['fqdn']}" if parsed["fqdn"] else None,
@@ -227,6 +223,143 @@ class ObservabilityAgent:
             "azure": parsed,
             "revisions": revision_result,
             "recommendations": recommendations,
+        }
+
+    def _build_control_plane_failure_result(
+        self,
+        command_result: dict[str, Any],
+        resource_group: str,
+        app_name: str,
+        app_url: str | None,
+        health_path: str,
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        failure = self._classify_azure_control_plane_failure(command_result)
+        health_result = None
+
+        if app_url:
+            health_result = self.check_http_health(
+                base_url=app_url,
+                health_path=health_path,
+                timeout_seconds=timeout_seconds,
+            )
+
+        endpoint_healthy = bool(
+            health_result and health_result.get("healthy") is True
+        )
+        message = failure["message"]
+
+        if endpoint_healthy:
+            message = (
+                f"{message} The public application health endpoint is responding successfully, "
+                "so this is a control-plane verification problem rather than evidence that the app is down."
+            )
+
+        return {
+            "status": failure["status"],
+            "message": message,
+            "healthy": False,
+            "endpoint_healthy": endpoint_healthy,
+            "azure_verified": False,
+            "verification_status": "control_plane_unverified",
+            "resource_group": resource_group,
+            "app_name": app_name,
+            "app_url": app_url,
+            "health": health_result,
+            "azure": {},
+            "revisions": None,
+            "azure_cli": command_result,
+            "recommendations": failure["recommendations"],
+        }
+
+    def _classify_azure_control_plane_failure(
+        self,
+        command_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        diagnostic_text = "\n".join(
+            str(command_result.get(key) or "")
+            for key in ["stdout", "stderr"]
+        ).lower()
+
+        authentication_markers = [
+            "aadsts",
+            "invalid_grant",
+            "interactionrequired",
+            "interaction_required",
+            "multi-factor authentication has expired",
+            "authentication has expired",
+            "refresh token",
+            "run 'az login'",
+            "run az login",
+        ]
+
+        if any(marker in diagnostic_text for marker in authentication_markers):
+            return {
+                "status": "authentication_required",
+                "message": "Azure CLI authentication expired or requires interactive sign-in.",
+                "recommendations": [
+                    "Run az login in the same environment that runs the CloudMind backend.",
+                    "Complete the required MFA prompt, then retry the Azure status check.",
+                    "Run az account show to confirm the intended subscription is active.",
+                ],
+            }
+
+        permission_markers = [
+            "authorizationfailed",
+            "does not have authorization",
+            "permission denied",
+            "insufficient privileges",
+            "forbidden",
+            "status code: 403",
+            "status code 403",
+            "http 403",
+        ]
+
+        if any(marker in diagnostic_text for marker in permission_markers):
+            return {
+                "status": "permission_denied",
+                "message": "Azure authentication succeeded, but the active identity cannot read this Container App.",
+                "recommendations": [
+                    "Verify that the active Azure identity has Reader access to the resource group or Container App.",
+                    "Confirm that CloudMind is using the intended Azure subscription.",
+                ],
+            }
+
+        not_found_markers = [
+            "resourcenotfound",
+            "could not be found",
+            "status code: 404",
+            "status code 404",
+            "http 404",
+        ]
+
+        if any(marker in diagnostic_text for marker in not_found_markers):
+            return {
+                "status": "not_found",
+                "message": "Azure confirmed that the requested Container App resource was not found.",
+                "recommendations": [
+                    "Verify the resource group name and Container App name.",
+                    "Confirm that CloudMind is using the subscription where the app was deployed.",
+                ],
+            }
+
+        if command_result.get("exit_code") is None and "azure cli command was not found" in diagnostic_text:
+            return {
+                "status": "azure_cli_unavailable",
+                "message": "Azure CLI is not available to the CloudMind backend process.",
+                "recommendations": [
+                    "Install Azure CLI and restart the terminal that runs the CloudMind backend.",
+                    "Run Get-Command az in that same terminal to confirm Azure CLI is available.",
+                ],
+            }
+
+        return {
+            "status": "azure_control_plane_error",
+            "message": "CloudMind could not read Azure Container App control-plane metadata.",
+            "recommendations": [
+                "Inspect the Azure CLI diagnostic returned with this status check.",
+                "Run az account show and retry the Container App lookup.",
+            ],
         }
 
     def get_azure_container_app_logs(

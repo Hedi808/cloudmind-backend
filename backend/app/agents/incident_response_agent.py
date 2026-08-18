@@ -235,6 +235,50 @@ class IncidentResponseAgent:
         min_replicas = azure.get("min_replicas")
         max_replicas = azure.get("max_replicas")
 
+        if result.get("azure_verified") is False:
+            endpoint_healthy = result.get("endpoint_healthy") is True
+            verification_status = result.get("status") or outer_status or "unknown"
+
+            findings.append(
+                "Azure control-plane status could not be verified by CloudMind."
+            )
+            likely_causes.append(
+                result.get("message")
+                or "Azure CLI authentication or permissions prevented the status lookup."
+            )
+            evidence.append(f"azure_verification_status={verification_status}")
+
+            if endpoint_healthy:
+                findings.append("The public application health endpoint is healthy.")
+                evidence.append(
+                    self._format_health_evidence(
+                        health=result.get("health") or {},
+                        azure=azure,
+                    )
+                )
+                risk_notes.append(
+                    "The app is publicly healthy, but Azure metadata and revision state remain unverified."
+                )
+
+            recommended_actions.append(
+                {
+                    "title": "Restore Azure control-plane access",
+                    "description": "Refresh Azure CLI authentication or permissions, then retry status and log collection.",
+                    "risk": "low",
+                    "requires_human_approval": False,
+                    "safe_to_auto_fix": False,
+                }
+            )
+
+            return {
+                "severity_score": 0 if endpoint_healthy else 1,
+                "findings": findings,
+                "likely_causes": likely_causes,
+                "recommended_actions": recommended_actions,
+                "evidence": evidence,
+                "risk_notes": risk_notes,
+            }
+
         if healthy:
             findings.append(
                 "Azure Container App public health check is healthy."

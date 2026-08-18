@@ -64,6 +64,16 @@ class Project(Base):
         cascade="all, delete-orphan",
     )
 
+    pipeline_runs: Mapped[list["PipelineRun"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+
+    llm_planning_runs: Mapped[list["LLMPlanningRun"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+
 
 class ConversationSession(Base):
     __tablename__ = "conversation_sessions"
@@ -90,6 +100,11 @@ class ConversationSession(Base):
     )
 
     action_runs: Mapped[list["ActionRun"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+
+    llm_planning_runs: Mapped[list["LLMPlanningRun"]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
     )
@@ -225,3 +240,84 @@ class DeploymentState(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     project: Mapped[Project] = relationship(back_populates="deployment_states")
+
+
+class PipelineRun(Base):
+    __tablename__ = "pipeline_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+
+    project_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+
+    status: Mapped[str] = mapped_column(String(100), nullable=False, default="running")
+    checkpoint_status: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        default="ready",
+    )
+    pause_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    repo_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    pull_request_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    pull_request_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    merge_commit_sha: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    image: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+    context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    executed_steps_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    checkpoint_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=now_utc,
+        onupdate=now_utc,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    project: Mapped[Project | None] = relationship(back_populates="pipeline_runs")
+
+
+class LLMPlanningRun(Base):
+    __tablename__ = "llm_planning_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    session_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("conversation_sessions.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
+    provider: Mapped[str] = mapped_column(String(100), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(100), nullable=False)
+    fallback_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    request_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    response_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    project: Mapped[Project | None] = relationship(back_populates="llm_planning_runs")
+    session: Mapped[ConversationSession | None] = relationship(back_populates="llm_planning_runs")
