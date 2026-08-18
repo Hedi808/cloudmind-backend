@@ -29,6 +29,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { sendCloudMindMessage } from "./api/cloudmindApi";
+import { AuthGate } from "./auth/AuthExperience";
 import { listPipelineRuns, runOrResumePipeline } from "./api/pipelineApi";
 import { getProject, listProjects } from "./api/projectsApi";
 import { getWorkflowPlan } from "./api/workflowsApi";
@@ -135,7 +136,7 @@ const runtimeActions = [
   },
 ];
 
-export default function App() {
+function CloudMindConsole() {
   const [sessionId, setSessionId] = useState<string>(() => createSessionId());
   const [projectMode, setProjectMode] = useState<"demo" | "custom">("custom");
 
@@ -739,7 +740,7 @@ export default function App() {
   };
 
   return (
-    <main className="h-screen overflow-hidden px-4 py-4 text-slate-100 md:px-5">
+    <main className="h-full overflow-hidden px-4 py-4 text-slate-100 md:px-5">
       <div className="mx-auto grid h-full max-w-[1900px] gap-4 xl:grid-cols-[340px_minmax(640px,1fr)_420px]">
         <aside className="custom-scrollbar min-h-0 space-y-4 overflow-y-auto pr-1">
           <BrandCard workflowPlan={workflowPlan} />
@@ -999,6 +1000,14 @@ export default function App() {
         </aside>
       </div>
     </main>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthGate>
+      <CloudMindConsole />
+    </AuthGate>
   );
 }
 

@@ -42,6 +42,18 @@ class Settings(BaseModel):
     llm_reasoning_effort: str = os.getenv("CLOUDMIND_LLM_REASONING_EFFORT", "medium")
     llm_timeout_seconds: int = _env_int("CLOUDMIND_LLM_TIMEOUT_SECONDS", 60)
 
+    auth_cookie_name: str = os.getenv("AUTH_COOKIE_NAME", "cloudmind_session")
+    auth_session_days: int = _env_int("AUTH_SESSION_DAYS", 14)
+    auth_cookie_secure: bool = _env_bool("AUTH_COOKIE_SECURE", False)
+    auth_frontend_url: str = os.getenv("AUTH_FRONTEND_URL", "http://localhost:5173")
+
+    google_oauth_client_id: str | None = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+    google_oauth_client_secret: str | None = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+    google_oauth_redirect_uri: str = os.getenv(
+        "GOOGLE_OAUTH_REDIRECT_URI",
+        "http://localhost:8000/api/auth/google/callback",
+    )
+
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
