@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from app.core.auth import get_current_user_id
+
 
 class ConversationMemoryAgent:
     """
@@ -29,8 +31,10 @@ class ConversationMemoryAgent:
         if not session_id:
             session_id = str(uuid4())
 
-        if session_id not in self.sessions:
-            self.sessions[session_id] = {
+        session_key = self._session_key(session_id)
+
+        if session_key not in self.sessions:
+            self.sessions[session_key] = {
                 "session_id": session_id,
                 "created_at": self._now(),
                 "updated_at": self._now(),
@@ -49,7 +53,7 @@ class ConversationMemoryAgent:
                 },
             }
 
-        return self.sessions[session_id]
+        return self.sessions[session_key]
 
     def add_message(
         self,
@@ -108,10 +112,14 @@ class ConversationMemoryAgent:
         self,
         session_id: str,
     ) -> dict[str, Any]:
-        if session_id in self.sessions:
-            del self.sessions[session_id]
+        session_key = self._session_key(session_id)
+        if session_key in self.sessions:
+            del self.sessions[session_key]
 
         return self.get_or_create_session(session_id)
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _session_key(self, session_id: str) -> str:
+        return f"{get_current_user_id() or 'system'}:{session_id}"

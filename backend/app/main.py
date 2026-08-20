@@ -1,7 +1,10 @@
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.azure import router as azure_router
+from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.cicd import router as cicd_router
@@ -18,7 +21,14 @@ from app.api.projects import router as projects_router
 from app.api.remediation import router as remediation_router
 from app.api.remediation_pr import router as remediation_pr_router
 from app.api.workflows import router as workflows_router
-from app.core.auth import require_current_user
+from app.core.auth import bind_current_user
+from app.core.tenancy import bootstrap_tenancy
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    bootstrap_tenancy()
+    yield
 
 
 app = FastAPI(
@@ -31,7 +41,8 @@ app = FastAPI(
         "uses conversational and planning LLM agents with deterministic policy enforcement, "
         "and executes safe backend pipeline steps with human approval gates."
     ),
-    version="0.22.0",
+    version="0.23.0",
+    lifespan=lifespan,
 )
 
 
@@ -54,8 +65,8 @@ def root():
     return {
         "status": "success",
         "message": "CloudMind API is running.",
-        "version": "0.22.0",
-        "phase": "phase_22_authentication",
+        "version": "0.23.0",
+        "phase": "phase_23_multi_tenant_workspaces",
         "docs": "/docs",
     }
 
@@ -65,19 +76,20 @@ def health_check():
     return {
         "status": "healthy",
         "service": "cloudmind-backend",
-        "version": "0.22.0",
+        "version": "0.23.0",
     }
 
 
 app.include_router(auth_router)
 
-protected = [Depends(require_current_user)]
+protected = [Depends(bind_current_user)]
 
 # chat_router already has prefix="/api/chat" inside app/api/chat.py
 app.include_router(chat_router, dependencies=protected)
 
 # Other routers are kept with prefix="/api"
 app.include_router(projects_router, prefix="/api", dependencies=protected)
+app.include_router(admin_router, prefix="/api", dependencies=protected)
 app.include_router(workflows_router, prefix="/api", dependencies=protected)
 app.include_router(pipeline_router, prefix="/api", dependencies=protected)
 app.include_router(docker_router, prefix="/api", dependencies=protected)

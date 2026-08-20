@@ -5,8 +5,9 @@ from typing import Any
 
 from sqlalchemy import desc
 
+from app.core.auth import get_current_user_id
 from app.db.database import SessionLocal, create_database_tables
-from app.db.models import LLMPlanningRun
+from app.db.models import ConversationSession, LLMPlanningRun, Project
 
 
 class LLMPlanningAuditAgent:
@@ -31,7 +32,25 @@ class LLMPlanningAuditAgent:
         usage = usage or {}
 
         with SessionLocal() as db:
+            user_id = get_current_user_id()
+            if user_id and project_id and not (
+                db.query(Project)
+                .filter(Project.id == project_id, Project.owner_id == user_id)
+                .first()
+            ):
+                raise ValueError(f"Project not found: {project_id}")
+            if user_id and session_id and not (
+                db.query(ConversationSession)
+                .filter(
+                    ConversationSession.id == session_id,
+                    ConversationSession.user_id == user_id,
+                )
+                .first()
+            ):
+                raise ValueError(f"Conversation session not found: {session_id}")
+
             run = LLMPlanningRun(
+                user_id=user_id,
                 project_id=project_id,
                 session_id=session_id,
                 provider=provider,
@@ -73,6 +92,9 @@ class LLMPlanningAuditAgent:
             query = db.query(LLMPlanningRun).filter(
                 LLMPlanningRun.provider == provider,
             )
+
+            if get_current_user_id():
+                query = query.filter(LLMPlanningRun.user_id == get_current_user_id())
 
             if model:
                 query = query.filter(LLMPlanningRun.model == model)

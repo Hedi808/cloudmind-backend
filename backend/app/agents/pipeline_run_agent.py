@@ -5,8 +5,9 @@ from typing import Any
 
 from sqlalchemy import desc
 
+from app.core.auth import get_current_user_id
 from app.db.database import SessionLocal, create_database_tables
-from app.db.models import PipelineRun
+from app.db.models import ConversationSession, PipelineRun, Project
 
 
 class PipelineRunAgent:
@@ -24,7 +25,13 @@ class PipelineRunAgent:
         checkpoint_status: str = "ready",
     ) -> dict[str, Any]:
         with SessionLocal() as db:
+            self._validate_tenant_links(
+                db,
+                project_id=context.get("project_id"),
+                session_id=context.get("session_id"),
+            )
             run = PipelineRun(
+                user_id=get_current_user_id(),
                 project_id=context.get("project_id"),
                 session_id=context.get("session_id"),
                 status=status,
@@ -43,7 +50,10 @@ class PipelineRunAgent:
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with SessionLocal() as db:
-            run = db.get(PipelineRun, run_id)
+            query = db.query(PipelineRun).filter(PipelineRun.id == run_id)
+            if get_current_user_id():
+                query = query.filter(PipelineRun.user_id == get_current_user_id())
+            run = query.first()
             return self._to_dict(run) if run else None
 
     def list_runs(
@@ -53,6 +63,9 @@ class PipelineRunAgent:
     ) -> list[dict[str, Any]]:
         with SessionLocal() as db:
             query = db.query(PipelineRun)
+
+            if get_current_user_id():
+                query = query.filter(PipelineRun.user_id == get_current_user_id())
 
             if project_id:
                 query = query.filter(PipelineRun.project_id == project_id)
@@ -83,10 +96,19 @@ class PipelineRunAgent:
         }
 
         with SessionLocal() as db:
-            run = db.get(PipelineRun, run_id)
+            query = db.query(PipelineRun).filter(PipelineRun.id == run_id)
+            if get_current_user_id():
+                query = query.filter(PipelineRun.user_id == get_current_user_id())
+            run = query.first()
 
             if run is None:
                 raise ValueError(f"Pipeline run not found: {run_id}")
+
+            self._validate_tenant_links(
+                db,
+                project_id=updates.get("project_id", run.project_id),
+                session_id=updates.get("session_id", run.session_id),
+            )
 
             for key, value in updates.items():
                 if key in allowed_fields:
@@ -106,6 +128,7 @@ class PipelineRunAgent:
     def _to_dict(self, run: PipelineRun) -> dict[str, Any]:
         return {
             "id": run.id,
+            "user_id": run.user_id,
             "project_id": run.project_id,
             "session_id": run.session_id,
             "status": run.status,
@@ -124,6 +147,32 @@ class PipelineRunAgent:
             "updated_at": run.updated_at.isoformat() if run.updated_at else None,
             "completed_at": run.completed_at.isoformat() if run.completed_at else None,
         }
+
+    def _validate_tenant_links(
+        self,
+        db,
+        *,
+        project_id: str | None,
+        session_id: str | None,
+    ) -> None:
+        user_id = get_current_user_id()
+        if not user_id:
+            return
+        if project_id and not (
+            db.query(Project)
+            .filter(Project.id == project_id, Project.owner_id == user_id)
+            .first()
+        ):
+            raise ValueError(f"Project not found: {project_id}")
+        if session_id and not (
+            db.query(ConversationSession)
+            .filter(
+                ConversationSession.id == session_id,
+                ConversationSession.user_id == user_id,
+            )
+            .first()
+        ):
+            raise ValueError(f"Conversation session not found: {session_id}")
 
     def _now(self) -> datetime:
         return datetime.now(timezone.utc)

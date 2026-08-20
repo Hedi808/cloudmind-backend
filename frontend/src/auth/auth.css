@@ -144,6 +144,24 @@
 .auth-loading-orb { width: 68px; height: 68px; display: grid; place-items: center; color: #80aaff; border: 1px solid rgba(83,137,255,.32); border-radius: 23px; background: rgba(41,89,191,.13); box-shadow: 0 0 60px rgba(43,102,224,.2); }
 .auth-console-shell { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 .auth-console-content { min-height: 0; flex: 1; }
+.auth-admin-button { display: flex; align-items: center; gap: 8px; margin-right: 8px; padding: 9px 13px; border: 1px solid rgba(126, 107, 255, .26); border-radius: 11px; color: #c4b9ff; background: rgba(102, 74, 214, .12); font-size: 11px; font-weight: 700; cursor: pointer; }
+.auth-admin-button:hover { color: #fff; border-color: rgba(151, 132, 255, .48); background: rgba(102, 74, 214, .2); }
+.auth-admin-button svg { width: 15px; height: 15px; }
+.auth-account-warning { color: #f5be68 !important; }
+.auth-account-warning i { background: #f1ad43 !important; box-shadow: 0 0 12px rgba(241, 173, 67, .55) !important; }
+.auth-password-backdrop { position: fixed; inset: 0; z-index: 1100; display: grid; place-items: center; padding: 20px; background: rgba(1, 5, 17, .84); backdrop-filter: blur(14px); }
+.auth-password-dialog { position: relative; width: min(430px, 94vw); padding: 30px; border: 1px solid rgba(110, 147, 245, .24); border-radius: 24px; color: #edf4ff; background: radial-gradient(circle at 100% 0, rgba(91, 67, 219, .2), transparent 42%), #0a1225; box-shadow: 0 30px 90px rgba(0, 0, 0, .55); }
+.auth-password-dialog-icon { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: 18px; border-radius: 15px; color: #86aaff; background: rgba(62, 104, 220, .18); border: 1px solid rgba(103, 145, 255, .25); }
+.auth-password-dialog > span { color: #7899df; font-size: 10px; font-weight: 800; letter-spacing: .18em; }
+.auth-password-dialog h2 { margin: 6px 0 8px; font-size: 23px; }
+.auth-password-dialog > p { margin: 0 0 20px; color: #8392ae; font-size: 12px; line-height: 1.6; }
+.auth-password-dialog label { display: grid; gap: 7px; margin-top: 13px; }
+.auth-password-dialog label > span { color: #a8b5ce; font-size: 11px; font-weight: 700; }
+.auth-password-dialog input { width: 100%; box-sizing: border-box; padding: 13px 14px; border: 1px solid rgba(121, 145, 198, .2); border-radius: 11px; outline: none; color: white; background: rgba(5, 12, 27, .72); }
+.auth-password-dialog input:focus { border-color: #4b80ef; box-shadow: 0 0 0 3px rgba(75, 128, 239, .12); }
+.auth-password-dialog .auth-submit { margin-top: 19px; }
+.auth-password-dialog-close { position: absolute; top: 18px; right: 18px; display: grid; place-items: center; width: 35px; height: 35px; border: 1px solid rgba(126, 151, 207, .16); border-radius: 10px; color: #8d9ab5; background: transparent; cursor: pointer; }
+.auth-password-dialog-close svg { width: 16px; }
 .auth-account-bar { position: relative; z-index: 40; height: 58px; flex: 0 0 58px; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid rgba(148,163,184,.12); background: rgba(3,8,20,.93); backdrop-filter: blur(20px); }
 .auth-account-brand { display: flex; align-items: center; gap: 9px; }
 .auth-account-brand > span { width: 29px; height: 29px; display: grid; place-items: center; color: #91b8ff; border-radius: 10px; background: rgba(55,112,235,.16); }

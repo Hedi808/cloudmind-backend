@@ -7,6 +7,7 @@ from uuid import uuid4
 from sqlalchemy import desc
 
 from app.agents.workflow_engine_agent import WorkflowEngineAgent
+from app.core.auth import get_current_user_id
 from app.db.database import SessionLocal, create_database_tables
 from app.db.models import ActionRun, DeploymentState, Project, ProjectArtifact
 
@@ -376,15 +377,22 @@ class FinalDemoOrchestratorAgent:
         app_name: str | None,
     ) -> Project | None:
         with SessionLocal() as db:
+            user_id = get_current_user_id()
+            tenant_filter = (Project.owner_id == user_id,) if user_id else ()
+
             if project_id:
-                project = db.get(Project, project_id)
+                project = (
+                    db.query(Project)
+                    .filter(Project.id == project_id, *tenant_filter)
+                    .first()
+                )
                 if project:
                     return self._detach_project(project)
 
             if repo_url:
                 project = (
                     db.query(Project)
-                    .filter(Project.repo_url == repo_url)
+                    .filter(Project.repo_url == repo_url, *tenant_filter)
                     .order_by(desc(Project.updated_at))
                     .first()
                 )
@@ -397,6 +405,7 @@ class FinalDemoOrchestratorAgent:
                     .filter(
                         Project.azure_resource_group == resource_group,
                         Project.azure_app_name == app_name,
+                        *tenant_filter,
                     )
                     .order_by(desc(Project.updated_at))
                     .first()
@@ -407,7 +416,7 @@ class FinalDemoOrchestratorAgent:
             if app_name:
                 project = (
                     db.query(Project)
-                    .filter(Project.azure_app_name == app_name)
+                    .filter(Project.azure_app_name == app_name, *tenant_filter)
                     .order_by(desc(Project.updated_at))
                     .first()
                 )

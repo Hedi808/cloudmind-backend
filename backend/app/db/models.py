@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -28,6 +28,12 @@ class User(Base):
     avatar_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="member", index=True)
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=now_utc, onupdate=now_utc
@@ -39,6 +45,14 @@ class User(Base):
     auth_sessions: Mapped[list["UserSession"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+    projects: Mapped[list["Project"]] = relationship(back_populates="owner")
+    conversation_sessions: Mapped[list["ConversationSession"]] = relationship(
+        back_populates="user"
+    )
+    pipeline_runs: Mapped[list["PipelineRun"]] = relationship(back_populates="user")
+    llm_planning_runs: Mapped[list["LLMPlanningRun"]] = relationship(
+        back_populates="user"
     )
 
 
@@ -67,11 +81,20 @@ class UserSession(Base):
 
 class Project(Base):
     __tablename__ = "projects"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "repo_url", name="uq_projects_owner_repo_url"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    repo_url: Mapped[str] = mapped_column(String(1000), unique=True, index=True)
+    repo_url: Mapped[str] = mapped_column(String(1000), index=True)
     repo_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
     repo_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     default_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -93,6 +116,8 @@ class Project(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+    owner: Mapped[User | None] = relationship(back_populates="projects")
 
     sessions: Mapped[list["ConversationSession"]] = relationship(
         back_populates="project",
@@ -129,6 +154,12 @@ class ConversationSession(Base):
     __tablename__ = "conversation_sessions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     project_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("projects.id", ondelete="CASCADE"),
@@ -143,6 +174,7 @@ class ConversationSession(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     project: Mapped[Project | None] = relationship(back_populates="sessions")
+    user: Mapped[User | None] = relationship(back_populates="conversation_sessions")
 
     messages: Mapped[list["ConversationMessage"]] = relationship(
         back_populates="session",
@@ -296,6 +328,12 @@ class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
 
     project_id: Mapped[str | None] = mapped_column(
         String(36),
@@ -333,12 +371,19 @@ class PipelineRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     project: Mapped[Project | None] = relationship(back_populates="pipeline_runs")
+    user: Mapped[User | None] = relationship(back_populates="pipeline_runs")
 
 
 class LLMPlanningRun(Base):
     __tablename__ = "llm_planning_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     project_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("projects.id", ondelete="CASCADE"),
@@ -371,3 +416,4 @@ class LLMPlanningRun(Base):
 
     project: Mapped[Project | None] = relationship(back_populates="llm_planning_runs")
     session: Mapped[ConversationSession | None] = relationship(back_populates="llm_planning_runs")
+    user: Mapped[User | None] = relationship(back_populates="llm_planning_runs")

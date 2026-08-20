@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from app.core.auth import get_current_user_id
 from app.db.database import SessionLocal, create_database_tables
 from app.db.models import (
     ActionRun,
@@ -43,6 +44,7 @@ class ProjectMemoryAgent:
                 repo_owner, repo_name = self._parse_github_repo(repo_url)
 
                 project = Project(
+                    owner_id=get_current_user_id(),
                     name=name or repo_name,
                     repo_url=repo_url,
                     repo_owner=repo_owner,
@@ -73,7 +75,7 @@ class ProjectMemoryAgent:
         project_id: str,
     ) -> dict[str, Any] | None:
         with SessionLocal() as db:
-            project = db.get(Project, project_id)
+            project = self._get_owned_project_db(db=db, project_id=project_id)
 
             if project is None:
                 return None
@@ -114,7 +116,7 @@ class ProjectMemoryAgent:
         analysis: dict[str, Any],
     ) -> dict[str, Any]:
         with SessionLocal() as db:
-            project = db.get(Project, project_id)
+            project = self._get_owned_project_db(db=db, project_id=project_id)
 
             if project is None:
                 raise ValueError(f"Project not found: {project_id}")
@@ -155,11 +157,17 @@ class ProjectMemoryAgent:
             session = None
 
             if session_id:
-                session = db.get(ConversationSession, session_id)
+                session = self._get_owned_session_db(db=db, session_id=session_id)
+                if session is None and db.get(ConversationSession, session_id) is not None:
+                    raise ValueError("Conversation session belongs to another user.")
+
+            if project_id:
+                self._require_owned_project(db=db, project_id=project_id)
 
             if session is None:
                 session = ConversationSession(
                     id=session_id if session_id else None,
+                    user_id=get_current_user_id(),
                     project_id=project_id,
                     title=title or "CloudMind session",
                     metadata_json={},
@@ -192,11 +200,15 @@ class ProjectMemoryAgent:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with SessionLocal() as db:
-            session = db.get(ConversationSession, session_id)
+            session = self._get_owned_session_db(db=db, session_id=session_id)
+
+            if session is None and db.get(ConversationSession, session_id) is not None:
+                raise ValueError("Conversation session belongs to another user.")
 
             if session is None:
                 session = ConversationSession(
                     id=session_id,
+                    user_id=get_current_user_id(),
                     title="CloudMind session",
                     metadata_json={},
                 )
@@ -232,6 +244,11 @@ class ProjectMemoryAgent:
         input_json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with SessionLocal() as db:
+            if project_id:
+                self._require_owned_project(db=db, project_id=project_id)
+            if session_id:
+                self._require_owned_session(db=db, session_id=session_id)
+
             action = ActionRun(
                 project_id=project_id,
                 session_id=session_id,
@@ -261,6 +278,10 @@ class ProjectMemoryAgent:
 
             if action is None:
                 raise ValueError(f"Action run not found: {action_run_id}")
+            if action.project_id:
+                self._require_owned_project(db=db, project_id=action.project_id)
+            elif action.session_id:
+                self._require_owned_session(db=db, session_id=action.session_id)
 
             action.status = status
             action.output_json = output_json or {}
@@ -313,6 +334,7 @@ class ProjectMemoryAgent:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with SessionLocal() as db:
+            self._require_owned_project(db=db, project_id=project_id)
             artifact = ProjectArtifact(
                 project_id=project_id,
                 action_run_id=action_run_id,
@@ -391,6 +413,7 @@ class ProjectMemoryAgent:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with SessionLocal() as db:
+            project = self._require_owned_project(db=db, project_id=project_id)
             existing = (
                 db.query(DeploymentState)
                 .filter(
@@ -428,15 +451,12 @@ class ProjectMemoryAgent:
                 deployment.metadata_json = metadata or {}
                 deployment.updated_at = self._now()
 
-            project = db.get(Project, project_id)
-
-            if project:
-                project.azure_resource_group = resource_group
-                project.azure_app_name = app_name
-                project.azure_environment_name = environment_name
-                project.azure_app_url = url
-                project.ghcr_image = image or project.ghcr_image
-                project.updated_at = self._now()
+            project.azure_resource_group = resource_group
+            project.azure_app_name = app_name
+            project.azure_environment_name = environment_name
+            project.azure_app_url = url
+            project.ghcr_image = image or project.ghcr_image
+            project.updated_at = self._now()
 
             db.commit()
             db.refresh(deployment)
@@ -449,6 +469,7 @@ class ProjectMemoryAgent:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         with SessionLocal() as db:
+            self._require_owned_project(db=db, project_id=project_id)
             actions = (
                 db.query(ActionRun)
                 .filter(ActionRun.project_id == project_id)
@@ -466,9 +487,56 @@ class ProjectMemoryAgent:
     ) -> Project | None:
         return (
             db.query(Project)
-            .filter(Project.repo_url == repo_url)
+            .filter(
+                Project.repo_url == repo_url,
+                *self._tenant_filters(Project.owner_id),
+            )
             .first()
         )
+
+    def _get_owned_project_db(self, db: Session, project_id: str) -> Project | None:
+        return (
+            db.query(Project)
+            .filter(
+                Project.id == project_id,
+                *self._tenant_filters(Project.owner_id),
+            )
+            .first()
+        )
+
+    def _require_owned_project(self, db: Session, project_id: str) -> Project:
+        project = self._get_owned_project_db(db=db, project_id=project_id)
+        if project is None:
+            raise ValueError(f"Project not found: {project_id}")
+        return project
+
+    def _get_owned_session_db(
+        self,
+        db: Session,
+        session_id: str,
+    ) -> ConversationSession | None:
+        return (
+            db.query(ConversationSession)
+            .filter(
+                ConversationSession.id == session_id,
+                *self._tenant_filters(ConversationSession.user_id),
+            )
+            .first()
+        )
+
+    def _require_owned_session(
+        self,
+        db: Session,
+        session_id: str,
+    ) -> ConversationSession:
+        session = self._get_owned_session_db(db=db, session_id=session_id)
+        if session is None:
+            raise ValueError(f"Conversation session not found: {session_id}")
+        return session
+
+    def _tenant_filters(self, owner_column: Any) -> tuple[Any, ...]:
+        user_id = get_current_user_id()
+        return (owner_column == user_id,) if user_id else ()
 
     def _parse_github_repo(
         self,
@@ -491,6 +559,7 @@ class ProjectMemoryAgent:
     ) -> dict[str, Any]:
         return {
             "id": project.id,
+            "owner_id": project.owner_id,
             "name": project.name,
             "repo_url": project.repo_url,
             "repo_owner": project.repo_owner,
@@ -517,6 +586,7 @@ class ProjectMemoryAgent:
     ) -> dict[str, Any]:
         return {
             "id": session.id,
+            "user_id": session.user_id,
             "project_id": session.project_id,
             "title": session.title,
             "metadata_json": session.metadata_json,

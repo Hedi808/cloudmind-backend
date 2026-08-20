@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from contextvars import ContextVar
+from collections.abc import AsyncGenerator
 from datetime import timedelta
 
-from fastapi import HTTPException, Request, Response, status
+from fastapi import Depends, HTTPException, Request, Response, status
 from pwdlib import PasswordHash
 from sqlalchemy.orm import Session
 
@@ -15,6 +17,14 @@ from app.db.models import User, UserSession, now_utc
 
 password_hash = PasswordHash.recommended()
 DUMMY_PASSWORD_HASH = password_hash.hash("cloudmind-dummy-password-123")
+_current_user_id: ContextVar[str | None] = ContextVar(
+    "cloudmind_current_user_id",
+    default=None,
+)
+_current_user_role: ContextVar[str | None] = ContextVar(
+    "cloudmind_current_user_role",
+    default=None,
+)
 
 
 def hash_password(password: str) -> str:
@@ -119,6 +129,38 @@ def require_current_user(request: Request) -> User:
     return user
 
 
+async def bind_current_user(
+    user: User = Depends(require_current_user),
+) -> AsyncGenerator[User, None]:
+    """Expose the authenticated tenant to agents for the lifetime of one request."""
+
+    user_token = _current_user_id.set(user.id)
+    role_token = _current_user_role.set(user.role)
+    try:
+        yield user
+    finally:
+        _current_user_role.reset(role_token)
+        _current_user_id.reset(user_token)
+
+
+def get_current_user_id() -> str | None:
+    return _current_user_id.get()
+
+
+def get_current_user_role() -> str | None:
+    return _current_user_role.get()
+
+
+def require_admin_user(request: Request) -> User:
+    user = require_current_user(request)
+    if user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required.",
+        )
+    return user
+
+
 def user_to_dict(user: User) -> dict[str, object]:
     return {
         "id": user.id,
@@ -127,4 +169,6 @@ def user_to_dict(user: User) -> dict[str, object]:
         "avatar_url": user.avatar_url,
         "email_verified": user.email_verified,
         "auth_provider": "google" if user.google_sub else "password",
+        "role": user.role,
+        "must_change_password": user.must_change_password,
     }

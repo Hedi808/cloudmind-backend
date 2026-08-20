@@ -3,6 +3,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import desc, or_
 
+from app.core.auth import get_current_user_id
 from app.db.database import SessionLocal, create_database_tables
 from app.db.models import ActionRun, DeploymentState, Project, ProjectArtifact
 
@@ -26,7 +27,7 @@ def list_projects(
     create_database_tables()
 
     with SessionLocal() as db:
-        query = db.query(Project)
+        query = db.query(Project).filter(Project.owner_id == get_current_user_id())
 
         if q:
             search = f"%{q}%"
@@ -70,7 +71,10 @@ def get_project_by_repo(
     with SessionLocal() as db:
         project = (
             db.query(Project)
-            .filter(Project.repo_url == repo_url)
+            .filter(
+                Project.repo_url == repo_url,
+                Project.owner_id == get_current_user_id(),
+            )
             .first()
         )
 
@@ -99,7 +103,7 @@ def get_project(
     create_database_tables()
 
     with SessionLocal() as db:
-        project = db.get(Project, project_id)
+        project = _owned_project(db, project_id)
 
         if project is None:
             raise HTTPException(
@@ -128,7 +132,7 @@ def get_project_timeline(
     create_database_tables()
 
     with SessionLocal() as db:
-        project = db.get(Project, project_id)
+        project = _owned_project(db, project_id)
 
         if project is None:
             raise HTTPException(
@@ -172,7 +176,7 @@ def get_project_artifacts(
     create_database_tables()
 
     with SessionLocal() as db:
-        project = db.get(Project, project_id)
+        project = _owned_project(db, project_id)
 
         if project is None:
             raise HTTPException(
@@ -219,7 +223,7 @@ def get_project_deployments(
     create_database_tables()
 
     with SessionLocal() as db:
-        project = db.get(Project, project_id)
+        project = _owned_project(db, project_id)
 
         if project is None:
             raise HTTPException(
@@ -253,7 +257,7 @@ def get_project_deployments(
 
 
 def _project_context(db, project_id: str) -> dict[str, Any]:
-    project = db.get(Project, project_id)
+    project = _owned_project(db, project_id)
 
     latest_deployment = (
         db.query(DeploymentState)
@@ -286,9 +290,21 @@ def _project_context(db, project_id: str) -> dict[str, Any]:
     }
 
 
+def _owned_project(db, project_id: str) -> Project | None:
+    return (
+        db.query(Project)
+        .filter(
+            Project.id == project_id,
+            Project.owner_id == get_current_user_id(),
+        )
+        .first()
+    )
+
+
 def _project_to_dict(project: Project) -> dict[str, Any]:
     return {
         "id": project.id,
+        "owner_id": project.owner_id,
         "name": project.name,
         "repo_url": project.repo_url,
         "repo_owner": project.repo_owner,

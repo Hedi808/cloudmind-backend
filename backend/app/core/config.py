@@ -46,6 +46,12 @@ class Settings(BaseModel):
     auth_session_days: int = _env_int("AUTH_SESSION_DAYS", 14)
     auth_cookie_secure: bool = _env_bool("AUTH_COOKIE_SECURE", False)
     auth_frontend_url: str = os.getenv("AUTH_FRONTEND_URL", "http://localhost:5173")
+    admin_email: str = os.getenv("CLOUDMIND_ADMIN_EMAIL", "admin@cloudmind.local")
+    admin_name: str = os.getenv("CLOUDMIND_ADMIN_NAME", "CloudMind Admin")
+    admin_password: str = os.getenv(
+        "CLOUDMIND_ADMIN_PASSWORD",
+        "CloudMindAdmin123!",
+    )
 
     google_oauth_client_id: str | None = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
     google_oauth_client_secret: str | None = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")

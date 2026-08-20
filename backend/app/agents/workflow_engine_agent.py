@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import desc
 
+from app.core.auth import get_current_user_id
 from app.db.database import SessionLocal, create_database_tables
 from app.db.models import ActionRun, DeploymentState, Project, ProjectArtifact
 
@@ -174,11 +175,22 @@ class WorkflowEngineAgent:
         project_id: str | None,
         repo_url: str | None,
     ) -> Project | None:
+        user_id = get_current_user_id()
+        tenant_filter = (Project.owner_id == user_id,) if user_id else ()
+
         if project_id:
-            return db.get(Project, project_id)
+            return (
+                db.query(Project)
+                .filter(Project.id == project_id, *tenant_filter)
+                .first()
+            )
 
         if repo_url:
-            return db.query(Project).filter(Project.repo_url == repo_url).first()
+            return (
+                db.query(Project)
+                .filter(Project.repo_url == repo_url, *tenant_filter)
+                .first()
+            )
 
         return None
 

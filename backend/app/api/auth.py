@@ -26,6 +26,7 @@ from app.db.models import User
 from app.schemas.auth import (
     AuthConfigResponse,
     AuthResponse,
+    ChangePasswordRequest,
     LoginRequest,
     RegisterRequest,
     UserResponse,
@@ -103,6 +104,36 @@ def me(user: User = Depends(require_current_user)) -> AuthResponse:
         message="Current user loaded.",
         user=UserResponse(**user_to_dict(user)),
     )
+
+
+@router.post("/change-password", response_model=AuthResponse)
+def change_password(
+    payload: ChangePasswordRequest,
+    current_user: User = Depends(require_current_user),
+) -> AuthResponse:
+    create_database_tables()
+    with SessionLocal() as db:
+        user = db.get(User, current_user.id)
+        if user is None or not verify_password(payload.current_password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect.",
+            )
+        if verify_password(payload.new_password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Choose a password different from your current password.",
+            )
+
+        user.password_hash = hash_password(payload.new_password)
+        user.must_change_password = False
+        db.commit()
+        db.refresh(user)
+        return AuthResponse(
+            status="password_changed",
+            message="Password changed successfully.",
+            user=UserResponse(**user_to_dict(user)),
+        )
 
 
 @router.post("/logout")

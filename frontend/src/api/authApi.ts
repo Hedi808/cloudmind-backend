@@ -11,6 +11,8 @@ export type AuthUser = {
   avatar_url: string | null;
   email_verified: boolean;
   auth_provider: "password" | "google";
+  role: "admin" | "member";
+  must_change_password: boolean;
 };
 
 export type AuthResponse = {
@@ -78,6 +80,18 @@ export async function logoutUser(): Promise<void> {
     {},
     { withCredentials: true, timeout: 15000 },
   );
+}
+
+export async function changePassword(payload: {
+  current_password: string;
+  new_password: string;
+}): Promise<AuthResponse> {
+  const response = await axios.post<AuthResponse>(
+    `${API_BASE_URL}/api/auth/change-password`,
+    payload,
+    { withCredentials: true, timeout: 30000 },
+  );
+  return response.data;
 }
 
 export function getAuthErrorMessage(error: unknown): string {

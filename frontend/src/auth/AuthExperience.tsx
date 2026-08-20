@@ -12,6 +12,7 @@ import {
   GitPullRequest,
   Loader2,
   LockKeyhole,
+  LayoutDashboard,
   LogOut,
   Menu,
   Network,
@@ -26,6 +27,7 @@ import type { FormEvent, ReactNode } from "react";
 
 import {
   API_BASE_URL,
+  changePassword,
   getAuthConfig,
   getAuthErrorMessage,
   getCurrentUser,
@@ -34,6 +36,7 @@ import {
   registerUser,
 } from "../api/authApi";
 import type { AuthConfig, AuthUser } from "../api/authApi";
+import { AdminDashboard } from "../admin/AdminDashboard";
 import "./auth.css";
 
 
@@ -44,6 +47,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [isChecking, setIsChecking] = useState(true);
   const [mode, setMode] = useState<AuthMode>("register");
   const [oauthMessage, setOauthMessage] = useState<string | null>(null);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -58,6 +63,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     void getCurrentUser()
       .then((currentUser) => {
         setUser(currentUser);
+        setPasswordOpen(Boolean(currentUser?.must_change_password));
         if (authSuccess && !currentUser) {
           setOauthMessage("Google sign-in completed, but the CloudMind session was not created.");
         }
@@ -87,7 +93,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
           setMode(nextMode);
           setOauthMessage(null);
         }}
-        onAuthenticated={setUser}
+        onAuthenticated={(authenticatedUser) => {
+          setUser(authenticatedUser);
+          setPasswordOpen(authenticatedUser.must_change_password);
+        }}
       />
     );
   }
@@ -96,6 +105,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
     <div className="auth-console-shell">
       <ConsoleAccountBar
         user={user}
+        onOpenAdmin={() => setAdminOpen(true)}
+        onChangePassword={() => setPasswordOpen(true)}
         onSignOut={async () => {
           try {
             await logoutUser();
@@ -105,6 +116,20 @@ export function AuthGate({ children }: { children: ReactNode }) {
         }}
       />
       <div className="auth-console-content">{children}</div>
+      {user.role === "admin" ? (
+        <AdminDashboard open={adminOpen} onClose={() => setAdminOpen(false)} />
+      ) : null}
+      <PasswordDialog
+        open={passwordOpen}
+        required={user.must_change_password}
+        onClose={() => {
+          if (!user.must_change_password) setPasswordOpen(false);
+        }}
+        onChanged={(updatedUser) => {
+          setUser(updatedUser);
+          setPasswordOpen(false);
+        }}
+      />
     </div>
   );
 }
@@ -404,15 +429,30 @@ function AuthCard({
   );
 }
 
-function ConsoleAccountBar({ user, onSignOut }: { user: AuthUser; onSignOut: () => void }) {
+function ConsoleAccountBar({
+  user,
+  onSignOut,
+  onOpenAdmin,
+  onChangePassword,
+}: {
+  user: AuthUser;
+  onSignOut: () => void;
+  onOpenAdmin: () => void;
+  onChangePassword: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const initials = user.display_name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 
   return (
     <header className="auth-account-bar">
       <div className="auth-account-brand"><span><Bot /></span><strong>CloudMind</strong><small>Secure workspace</small></div>
-      <div className="auth-account-status"><i /> Local AI online <span>·</span> Approval policy active</div>
+      <div className={user.must_change_password ? "auth-account-status auth-account-warning" : "auth-account-status"}><i /> {user.must_change_password ? "Admin password change required" : "Local AI online"} <span>·</span> Approval policy active</div>
       <div className="auth-account-menu-wrap">
+        {user.role === "admin" ? (
+          <button className="auth-admin-button" onClick={onOpenAdmin}>
+            <LayoutDashboard /> Admin overview
+          </button>
+        ) : null}
         <button className="auth-account-button" onClick={() => setOpen((current) => !current)}>
           {user.avatar_url ? <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" /> : <span>{initials}</span>}
           <div><strong>{user.display_name}</strong><small>{user.email}</small></div>
@@ -421,13 +461,77 @@ function ConsoleAccountBar({ user, onSignOut }: { user: AuthUser; onSignOut: () 
         <AnimatePresence>
           {open && (
             <motion.div className="auth-account-dropdown" initial={{ opacity: 0, y: -8, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -8, scale: 0.98 }}>
-              <div><span>{initials}</span><p><strong>{user.display_name}</strong><small>{user.auth_provider === "google" ? "Google account" : "Email account"}</small></p></div>
+              <div><span>{initials}</span><p><strong>{user.display_name}</strong><small>{user.role === "admin" ? "Administrator" : user.auth_provider === "google" ? "Google account" : "Email account"}</small></p></div>
+              {user.role === "admin" ? <button onClick={() => { setOpen(false); onOpenAdmin(); }}><LayoutDashboard /> Admin overview</button> : null}
+              {user.auth_provider === "password" ? <button onClick={() => { setOpen(false); onChangePassword(); }}><LockKeyhole /> Change password</button> : null}
               <button onClick={onSignOut}><LogOut /> Sign out</button>
             </motion.div>
           )}
         </AnimatePresence>
       </div>
     </header>
+  );
+}
+
+function PasswordDialog({
+  open,
+  required,
+  onClose,
+  onChanged,
+}: {
+  open: boolean;
+  required: boolean;
+  onClose: () => void;
+  onChanged: (user: AuthUser) => void;
+}) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setCurrentPassword("");
+      setNewPassword("");
+      setError(null);
+    }
+  }, [open]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await changePassword({
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      onChanged(response.user);
+    } catch (submitError) {
+      setError(getAuthErrorMessage(submitError));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {open ? (
+        <motion.div className="auth-password-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.form className="auth-password-dialog" onSubmit={submit} initial={{ opacity: 0, y: 18, scale: .98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 12, scale: .98 }}>
+            <div className="auth-password-dialog-icon"><LockKeyhole /></div>
+            {!required ? <button type="button" className="auth-password-dialog-close" onClick={onClose} aria-label="Close"><X /></button> : null}
+            <span>{required ? "SECURE YOUR ADMIN" : "ACCOUNT SECURITY"}</span>
+            <h2>{required ? "Choose your private admin password" : "Change your password"}</h2>
+            <p>{required ? "The bootstrap password is only for first access. Replace it before using CloudMind normally." : "Enter your current password and choose a new one."}</p>
+            <label><span>Current password</span><input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>
+            <label><span>New password</span><input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} minLength={8} placeholder="8+ characters, letters and numbers" required /></label>
+            {error ? <div className="auth-error">{error}</div> : null}
+            <button className="auth-submit" type="submit" disabled={submitting}>{submitting ? <><Loader2 className="auth-spin" /> Updating…</> : <>Save secure password <ArrowRight /></>}</button>
+          </motion.form>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
   );
 }
 
